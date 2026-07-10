@@ -6,6 +6,7 @@ use device_api::{Identity, Role};
 use rusqlite::Connection;
 
 use crate::config::{AuthMode, Config};
+use crate::ownership::Ownership;
 
 /// Cloneable handle threaded through every route.
 ///
@@ -21,6 +22,10 @@ pub struct AppState {
     /// zero users). In memory only: a crash mints a fresh one on restart
     /// (crash-only — nothing to persist, startup regenerates).
     pub setup_token_hash: Arc<Mutex<Option<String>>>,
+    /// Which tree paths this tier may author (federation §8.4 single
+    /// writer per layer). v1 single-tier: [`Ownership::Root`]; C10
+    /// populates [`Ownership::Gateway`] from tier configuration.
+    pub ownership: Arc<Ownership>,
 }
 
 impl AppState {

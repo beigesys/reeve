@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router, middleware};
 use serde_json::json;
 
@@ -14,6 +14,7 @@ use crate::auth;
 use crate::enroll::SqliteEnrollmentService;
 use crate::join_tokens;
 use crate::state::AppState;
+use crate::tree;
 
 pub fn build(state: AppState) -> Router {
     let human = Router::new()
@@ -28,6 +29,19 @@ pub fn build(state: AppState) -> Router {
             post(join_tokens::create).get(join_tokens::index),
         )
         .route("/api/join-tokens/{token_hash}", delete(join_tokens::delete))
+        // Tree authoring + inspection (D14): writes operator+, reads
+        // viewer+, role enforced inside the handlers; ownership per
+        // federation §8.2/§8.4 enforced structurally in tree.rs.
+        .route("/api/tree/layers/{layer}", put(tree::put_layer))
+        .route(
+            "/api/tree/packages/{name}/{version}",
+            put(tree::put_package),
+        )
+        .route("/api/tree/revisions", get(tree::list_revisions))
+        .route("/api/tree/revisions/{id}", get(tree::get_revision))
+        .route("/api/tree/revisions/{id}/files/{*path}", get(tree::file_at))
+        .route("/api/tree/diff/{a}/{b}", get(tree::diff))
+        .route("/api/tree/blame/{*path}", get(tree::blame))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::human_auth,

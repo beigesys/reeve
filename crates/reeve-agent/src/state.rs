@@ -92,6 +92,19 @@ pub struct AppliedApp {
     pub phase: String,
 }
 
+/// One unsent status-report row (store-and-forward seed for B7
+/// backfill; spec/reeve/05-health-journal.md §7.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusRow {
+    pub seq: i64,
+    /// Original timestamp — assigned when journaled, never rewritten
+    /// (§7 "original timestamp"); becomes `reeve.observedAt`.
+    pub ts: String,
+    pub app_id: String,
+    pub deployment_id: String,
+    pub body_json: String,
+}
+
 /// Handle on agent.db.
 pub struct AgentDb {
     conn: Connection,
@@ -146,6 +159,18 @@ impl AgentDb {
                 -- bundle, grammar sha256:<hex>.
                 digest     TEXT NOT NULL,
                 swapped_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS status_reports (
+                seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT NOT NULL,
+                app_id        TEXT NOT NULL,
+                deployment_id TEXT NOT NULL,
+                -- Serialized Margo DeploymentStatusManifest WITHOUT
+                -- the reeve extension; the sender attaches
+                -- {observedAt: ts, seq} at transmission time
+                -- (spec/reeve/05-health-journal.md §7.3).
+                body_json     TEXT NOT NULL,
+                sent          INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1))
             );
             "#,
         )?;
@@ -326,6 +351,97 @@ impl AgentDb {
         Ok(())
     }
 
+    /// Record one D5 phase transition: upsert the applied-state row
+    /// AND journal the transition, atomically (one transaction,
+    /// Law 3 — the phase row and its journal evidence can never
+    /// diverge). This is THE call that records intent BEFORE action
+    /// (docs/decisions/agent.md D5): converge writes `planned` /
+    /// `applying` / `removing` before it acts, and `applied` /
+    /// `failed` / `removed` after.
+    pub fn record_phase(
+        &mut self,
+        app_id: &str,
+        content_hash: &str,
+        secrets_version: Option<&str>,
+        phase: &str,
+        detail: &str,
+    ) -> Result<(), StateError> {
+        let severity = if phase == "failed" {
+            Severity::Error
+        } else {
+            Severity::Info
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO applied_state (app_id, content_hash, secrets_version, phase, updated_at)
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+             ON CONFLICT(app_id) DO UPDATE SET
+                 content_hash    = excluded.content_hash,
+                 secrets_version = excluded.secrets_version,
+                 phase           = excluded.phase,
+                 updated_at      = excluded.updated_at",
+            params![app_id, content_hash, secrets_version, phase],
+        )?;
+        tx.execute(
+            "INSERT INTO journal (ts, severity, event, detail)
+             VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3)",
+            params![severity.as_str(), format!("app-{phase}"), format!("{app_id}: {detail}")],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record one status report locally FIRST (store-and-forward,
+    /// spec/reeve/05-health-journal.md §7.3: "journaling MUST NOT
+    /// depend on connectivity"). Returns the row's monotonic `seq` —
+    /// what the reeve status extension carries. Full backfill
+    /// machinery is B7; this table + the sent flag is its seed.
+    pub fn record_status(
+        &self,
+        app_id: &str,
+        deployment_id: &str,
+        body_json: &str,
+    ) -> Result<i64, StateError> {
+        self.conn.execute(
+            "INSERT INTO status_reports (ts, app_id, deployment_id, body_json, sent)
+             VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, 0)",
+            params![app_id, deployment_id, body_json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Unsent status reports in sequence order (§7.3: batches ordered
+    /// by sequence number).
+    pub fn unsent_statuses(&self) -> Result<Vec<StatusRow>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, ts, app_id, deployment_id, body_json FROM status_reports
+             WHERE sent = 0 ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(StatusRow {
+                    seq: r.get(0)?,
+                    ts: r.get(1)?,
+                    app_id: r.get(2)?,
+                    deployment_id: r.get(3)?,
+                    body_json: r.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Mark one status report transmitted. Idempotent; resending
+    /// after a crash is harmless because the server deduplicates by
+    /// `(deviceId, seq)` (spec/reeve/05-health-journal.md §7.3).
+    pub fn mark_status_sent(&self, seq: i64) -> Result<(), StateError> {
+        self.conn.execute(
+            "UPDATE status_reports SET sent = 1 WHERE seq = ?1",
+            params![seq],
+        )?;
+        Ok(())
+    }
+
     /// Upsert one applied-state row (exposed now so B3's provider
     /// has its contract; used by tests).
     pub fn record_applied(
@@ -455,6 +571,60 @@ mod tests {
             events,
             vec!["bundle-swapped", "bundle-swapped", "bundle-state-cleared"]
         );
+    }
+
+    #[test]
+    fn record_phase_upserts_and_journals_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        db.record_phase("web", "sha256:h1", None, "planned", "hash sha256:h1")
+            .unwrap();
+        db.record_phase("web", "sha256:h1", None, "applying", "")
+            .unwrap();
+        db.record_phase("web", "sha256:h1", Some("sv1"), "applied", "")
+            .unwrap();
+        let apps = db.applied_apps().unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].phase, "applied");
+        assert_eq!(apps[0].secrets_version.as_deref(), Some("sv1"));
+        let events: Vec<String> = db
+            .journal_entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
+        assert_eq!(events, vec!["app-planned", "app-applying", "app-applied"]);
+        // failed phase journals at error severity
+        db.record_phase("web", "sha256:h1", None, "failed", "boom")
+            .unwrap();
+        let last = db.journal_entries().unwrap().pop().unwrap();
+        assert_eq!(last.severity, "error");
+        assert_eq!(last.event, "app-failed");
+        // invalid phase rejected by CHECK, and the journal side of
+        // the transaction must not land either (atomicity).
+        let before = db.journal_entries().unwrap().len();
+        assert!(db.record_phase("web", "sha256:h1", None, "exploded", "").is_err());
+        assert_eq!(db.journal_entries().unwrap().len(), before);
+    }
+
+    #[test]
+    fn status_reports_store_and_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        let s1 = db.record_status("web", "dep-1", "{\"a\":1}").unwrap();
+        let s2 = db.record_status("db", "dep-2", "{\"b\":2}").unwrap();
+        assert!(s1 < s2, "seq must be monotonic");
+        let unsent = db.unsent_statuses().unwrap();
+        assert_eq!(unsent.len(), 2);
+        assert_eq!(unsent[0].seq, s1);
+        assert_eq!(unsent[0].app_id, "web");
+        assert!(!unsent[0].ts.is_empty());
+        db.mark_status_sent(s1).unwrap();
+        let unsent = db.unsent_statuses().unwrap();
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].seq, s2);
+        // marking twice is harmless (crash-resend idempotency)
+        db.mark_status_sent(s1).unwrap();
     }
 
     #[test]

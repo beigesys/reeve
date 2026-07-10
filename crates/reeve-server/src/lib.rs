@@ -15,8 +15,10 @@ pub mod db;
 pub mod device_tokens;
 pub mod enroll;
 pub mod join_tokens;
+pub mod ownership;
 pub mod router;
 pub mod state;
+pub mod tree;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -56,6 +58,10 @@ pub fn bootstrap(cfg: Config) -> anyhow::Result<AppState> {
         db: Arc::new(Mutex::new(conn)),
         revisions: Arc::new(Mutex::new(revisions)),
         setup_token_hash: Arc::new(Mutex::new(None)),
+        // v1 single-tier: root owns every authorable path; the upstream
+        // stream is refused structurally regardless (federation §8.2).
+        // C10 swaps in Ownership::Gateway when `upstream` is configured.
+        ownership: Arc::new(ownership::Ownership::Root),
     })
 }
 

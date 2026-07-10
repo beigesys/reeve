@@ -1,7 +1,6 @@
 //! reeve-agent — the per-device agent: fetch -> diff -> apply ->
-//! report. This library holds the manifest poll loop core (build
-//! item B1); the compose provider, bundle pull, and reporting layers
-//! build on it.
+//! report. Manifest poll loop (B1), bundle pull (B2), and the
+//! compose-provider converge loop + status reporting (B3).
 //!
 //! Design laws in force (CLAUDE.md):
 //! - **Offline-first (Law 5)**: the agent assumes it is offline more
@@ -17,14 +16,20 @@
 
 pub mod bundle;
 pub mod config;
+pub mod converge;
 pub mod enroll;
 pub mod poll;
+pub mod provider;
+pub mod report;
 pub mod source;
 pub mod state;
 
 pub use bundle::{BundleSource, BundleStore, PullError};
 pub use config::AgentConfig;
+pub use converge::{AppReport, Desired, converge, resolve_desired};
 pub use enroll::{EnrollCmdError, EnrollOpts, enroll};
 pub use poll::{PollOutcome, VersionDecision, evaluate_version, poll_once};
+pub use provider::{AppStatus, CommandComposeProvider, Provider, ProviderError};
+pub use report::{StatusSink, record_reports};
 pub use source::{ManifestSource, PollResponse, SourceError};
 pub use state::{AgentDb, Severity};

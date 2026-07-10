@@ -3,11 +3,13 @@
 //! continuing from, then poll forever (Law 5: offline is a logged
 //! no-op, never an exit).
 
+use std::path::Path;
 use std::time::Duration;
 
 use reeve_agent::{
-    AgentConfig, AgentDb, BundleSource, BundleStore, ManifestSource, PollOutcome, PullError,
-    poll_once,
+    AgentConfig, AgentDb, BundleSource, BundleStore, CommandComposeProvider, ManifestSource,
+    PollOutcome, Provider, PullError, StatusSink, converge, poll_once, record_reports,
+    resolve_desired,
 };
 use tracing::{error, info, warn};
 
@@ -25,6 +27,33 @@ async fn sync_bundle(store: &BundleStore, db: &mut AgentDb, source: &BundleSourc
         Err(e) => {
             warn!(error = %e, "bundle pull failed; continuing from last swapped bundle");
         }
+    }
+}
+
+/// One converge + report pass (B3): diff the swapped bundle against
+/// applied state, act through the provider, journal status rows
+/// locally FIRST, then flush anything unsent (backlog included) to
+/// the server if reachable. Consumes only local state until the
+/// final send — the first pass after restart works with the server
+/// unreachable (Law 5).
+async fn converge_and_report(
+    db: &mut AgentDb,
+    data_dir: &Path,
+    store: &BundleStore,
+    provider: &dyn Provider,
+    sink: Option<&StatusSink>,
+) {
+    let desired = resolve_desired(db, store);
+    let reports = converge(db, data_dir, provider, &desired);
+    if !reports.is_empty() {
+        info!(acted_on = reports.len(), "converge pass acted");
+        record_reports(db, &reports);
+    }
+    // Flush unsent status rows every cycle (store-and-forward,
+    // spec/reeve/05-health-journal.md §7.3) — also drains the
+    // backlog accumulated while offline.
+    if let Some(sink) = sink {
+        sink.send_unsent(db).await;
     }
 }
 
@@ -97,6 +126,25 @@ async fn main() -> anyhow::Result<()> {
     }
     sync_bundle(&store, &mut db, &bundle_source).await;
 
+    // The compose provider (docs/decisions/agent.md D5) and the
+    // status sink (Margo deployment-status path; None for dir://
+    // sources and unenrolled agents — reports then accumulate
+    // locally, spec/reeve/05-health-journal.md §7.3).
+    let provider = CommandComposeProvider::new(&config.data_dir);
+    let sink = StatusSink::from_config(
+        &config.server,
+        config.device_token.clone(),
+        config.device_id.clone(),
+    );
+    if sink.is_none() {
+        info!("no status sink (dir:// source or not enrolled); status reports journal locally");
+    }
+
+    // First converge BEFORE the first poll: startup IS recovery
+    // (Law 3 — any non-terminal phase re-runs) and must work from
+    // last known state with the server unreachable (Law 5).
+    converge_and_report(&mut db, &config.data_dir, &store, &provider, sink.as_ref()).await;
+
     // Capability probe once per startup (spec/reeve/01-framework.md
     // §3.3: probe per enrollment and on version change; a restart
     // covers "on version change" — ours may have changed). 404 or
@@ -110,6 +158,10 @@ async fn main() -> anyhow::Result<()> {
         None => info!("no reeve capabilities advertised; proceeding with pure Margo behavior"),
     }
 
+    // The loop: poll -> sync bundle -> converge -> report. Converge
+    // runs on EVERY cycle — it is a silent no-op when converged (D5)
+    // and doubles as the retry path for failed applies, interrupted
+    // phases, and unsent status backlog.
     let interval = Duration::from_secs(config.poll_interval_secs.max(1));
     loop {
         match poll_once(&mut db, &source).await {
@@ -122,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
             }
             PollOutcome::SourceUnavailable => {
                 // Already journaled + logged inside poll_once.
+                // Converge still runs from last known state (Law 5).
             }
             PollOutcome::Accepted { manifest, etag, epoch_bump } => {
                 info!(
@@ -132,12 +185,12 @@ async fn main() -> anyhow::Result<()> {
                     "new desired state accepted; pulling render bundle"
                 );
                 sync_bundle(&store, &mut db, &bundle_source).await;
-                // B3 (compose provider converge) attaches here.
             }
             PollOutcome::Rejected { received } => {
                 warn!(received = received.0, "manifest rejected; holding last known state");
             }
         }
+        converge_and_report(&mut db, &config.data_dir, &store, &provider, sink.as_ref()).await;
         tokio::time::sleep(interval).await;
     }
 }
