@@ -1,19 +1,25 @@
 test:
     cargo test --workspace
 
-# Sean's trick: prove every crate stands alone
+# Prove every crate stands alone (Law 2)
 standalone:
-    for c in reeve-server reeve-agent reeve-types margo-package desired-state repo-store device-api; do \
+    for c in reeve-server reeve-agent reeve-types margo-package desired-state revision-store device-api; do \
         cargo build -p $c || exit 1; \
     done
 
 ui-dev:
     cd ui && npm run dev
 
-# NOT WIRED YET: utoipa isn't a dependency on device-api/reeve-server,
-# and no openapi->TS codegen tool is chosen. Fill in once decided.
-api-types:
-    @echo "api-types: not wired yet (needs utoipa + a TS codegen tool)" && exit 1
+# utoipa openapi.json -> orval-generated TS client + React Query hooks (D1)
+gen-api:
+    cargo run -p reeve-server -- openapi > ui/openapi.json
+    cd ui && npm run gen-api
+
+# Conformance: core loop with all extensions compiled out (E2)
+conformance:
+    cargo build -p reeve-agent --no-default-features
+    cargo build -p reeve-server --no-default-features
+    cargo test -p reeve-server --no-default-features
 
 # vite build before cargo so build.rs embeds a fresh ui/dist
 build:
