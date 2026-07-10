@@ -12,7 +12,20 @@ revision-store = { path = "../revision-store" }
 device-api = { path = "../device-api" }
 axum = { workspace = true }
 rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# Version-pinned locally per build rules.
+argon2 = "0.5"
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

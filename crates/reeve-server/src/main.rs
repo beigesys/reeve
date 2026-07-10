@@ -1,6 +1,15 @@
-//! reeve — the server. Renders the tree into per-device repos, serves
-//! the device API and UI. SQLite (WAL) for runtime state; git repos are
-//! the source of truth. Crash-only: kill -9 mid-render must be safe.
-fn main() {
-    println!("reeve: no devices enrolled");
+//! Thin binary entrypoint; all logic lives in the reeve-server library so
+//! integration tests exercise the same code paths.
+
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Structured logs to stdout (operational contract, CLAUDE.md).
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
+
+    let cfg = reeve_server::config::Config::from_env()?;
+    reeve_server::run(cfg).await
 }

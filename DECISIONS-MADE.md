@@ -56,3 +56,60 @@ One line each: what, where, which doc informed it.
 - Plain rowid tables with explicit PKs (no WITHOUT ROWID) so the D16 session-extension change capture at server level can track them.
 - sha2 0.10 pinned in the crate's own Cargo.toml rather than workspace.dependencies, per build-rule preference to avoid root Cargo.toml conflicts.
 - Kept AUTOINCREMENT so rolled-back/killed transactions can never reuse a revision id (append-only invariant survives crashes).
+
+## B1 manifest poll
+- Default poll interval 30s (spec pins no value; 02-channel notes latency = poll interval without the channel)
+- HTTP client is reqwest 0.12 pinned in-crate with default-features off + rustls-tls (no openssl); 30s request timeout so a poll can never hang
+- ManifestVersion persisted as u64 bit-cast to i64 in SQLite; compared only in Rust (documented in schema) — test covers epoch 0xFFFF past bit 63
+- manifestVersion 0 rejected as invalid (Margo range [1, 2^64-1], first MUST be 1) and journaled as security; first-ever manifest otherwise accepted at any valid value
+- 200 response missing an ETag header falls back to sha256 digest of the body so conditional GET still works
+- Error classification: unreachable (network/missing dir) journaled 'info' severity — expected offline operation; non-200/304 status or unparseable body journaled 'error'; both continue from last known state
+- Bundle digest violating sha256:<hex> grammar rejects the manifest before version evaluation (it could never verify after pull)
+- Acceptance is atomic: manifest_state upsert + journal row in ONE transaction; persist failure means not accepted (floor unchanged, retried next cycle)
+- applied_state table created now with D5 phase CHECK (planned/applying/applied/failed/removing/removed) and record_applied/applied_apps accessors so B3 has its contract; B1 only reads
+- dir:// sources never advertise capabilities (no server) => pure Margo behavior
+- Capability probe runs once per startup (restart covers 'on version change'); result is informational only, convergence never depends on it (§3.2)
+- Used axum (already a workspace dep) as the mock test server instead of adding httpmock
+
+## C1 identity/auth
+- Placement per task suggestion: Identity/Role/extractors + device-token machinery in device-api; human auth modes + role policy in reeve-server/src/auth/ (D1 seam shared, Law 2 kept)
+- refinery is UNLINKABLE here: refinery-core 0.9.2 caps rusqlite at <=0.39 while the workspace pins rusqlite 0.40 (session feature, D16) and libsqlite3-sys `links=sqlite3` forbids two copies — shipped a minimal embedded runner keeping refinery's refinery_schema_history table shape (drop-in swap later), sha256 checksums with drift detection, one tx per migration; documented in db.rs module docs
+- db::migrate() returns bool 'applied anything' so C6 can honor D16's migration-cuts-snapshot-generation law
+- revision-store keeps self-initializing its own DDL on the shared single DB file (Law 2); server migrations own only server tables; two writer connections arbitrated by WAL+busy_timeout for now
+- Device tokens: 'rvd_' + 64 hex (256-bit CSPRNG), stored as plain hex sha256 — sufficient preimage resistance for high-entropy random tokens; argon2 reserved for human passwords
+- Identity::Anonymous carries no privilege in the type; REEVE_AUTH=none elevation to admin happens only in mode-aware AppState::effective_role (password-mode anonymous stays role-less)
+- Proxy mode refuses startup unless BOTH REEVE_PROXY_USER_HEADER and REEVE_PROXY_TRUSTED_CIDR are set; missing peer address or untrusted peer => 401 fail-closed; optional REEVE_PROXY_ROLE_HEADER: absent => admin (proxy gates access), unparseable => viewer (least privilege)
+- First-boot setup token is in-memory only (sha256 in AppState), logged at WARN, single-use, burned on success; crash-only: a restart while zero users exist mints a fresh one — nothing persisted
+- Sessions: cookie 'reeve_session' holds raw 'rvh_' token, DB stores sha256; sliding expiry (REEVE_SESSION_TTL_SECS, default 7d) with 60s write granularity to avoid per-request writes; expired sessions purged at startup, no background reaper
+- Hand-rolled ~60-line CIDR matcher (IPv4/IPv6, v4-mapped canonicalization) and manual cookie parse/set — avoided ipnet and axum-extra deps
+- Cookies are HttpOnly+SameSite=Lax without Secure attribute (TLS termination is deployment-specific); noted for packaging docs
+- reeve-server restructured to lib (src/lib.rs) + thin main.rs so integration tests and C2..C12 compose the same bootstrap/router
+- V1 migration creates minimal devices + device_tokens tables (auth needs the FK target); C2 enrollment extends devices via a V2 migration, never recreates
+- Defaults: REEVE_LISTEN 0.0.0.0:8420, REEVE_DATA_DIR ./data (DB at <data_dir>/reeve.db), REEVE_AUTH password
+- login/setup return 404 outside password mode (surface does not exist); logout/me exist in all modes
+- argon2id via argon2-0.5 defaults with 128-bit getrandom salt through SaltString::encode_b64 (avoids password-hash rand_core feature); dummy-hash verification on unknown usernames against timing enumeration
+- No root Cargo.toml edits — all new deps version-pinned in the two crates (sha2 0.10, hex 0.4, getrandom 0.3, argon2 0.5; dev: tower 0.5, http-body-util 0.1, tempfile 3)
+
+## B2 bundle pull
+- Atomic dir swap implemented as content-addressed dirs + symlink flip: bundles unpack to work/, validate, fsync, rename to data_dir/bundles/<hex> (presence there ALWAYS means complete+verified), then one rename(2) of a pre-made relative symlink data_dir/bundle -> bundles/<hex>; kill -9 leaves either old or new target, never neither (rename over a non-empty dir is not atomic on Linux; symlink rename is)
+- Recovery direction is roll-FORWARD: the swap is the commitment point; if kill -9 lands between swap and DB record, startup recovery records the disk digest (journal event bundle-rolled-forward); if the recorded bundle vanished from disk (external interference), the record is cleared (notable journal event bundle-state-cleared)
+- bundle.url interpretation: for http(s) sources it is the OCI repository base (absolute URL, or server-relative /v2/<name> joined to the configured server origin; a full .../manifests/<digest> URL is trimmed to its repo base); for dir:// sources it is an OCI layout directory path resolved relative to the manifest source dir (blobs/sha256/<hex> read directly) — oras/skopeo layout output is directly consumable
+- bundle.digest names the OCI image manifest (not the layer); the manifest bytes are verified against it, then exactly ONE layer with mediaType application/vnd.reeve.render-bundle.v1+tar+gzip is required and its blob verified against the layer digest; zero or multiple render layers fail closed
+- Unpack is fail-closed: only Regular and Directory tar entries accepted (symlinks/devices/hardlinks rejected, not skipped); any path component that is absolute or .. rejects the whole bundle; file bytes fsynced at write, dirs fsynced bottom-up before the publishing rename
+- Bundle bytes are buffered in memory during fetch (render bundles are config-scale; digest verification needs the whole payload anyway); HTTP client timeout 120s
+- manifest bundle:null (zero apps) is a no-op for B2 — the current bundle link is left in place; removal convergence belongs to B3 per D5
+- sizeBytes never enforced (advisory per reeve-types BundleRef doc; digest is the sole integrity check)
+- main.rs runs BundleStore::sync on NotModified (304) as well as Accepted, because 304 does not imply the bundle is in place — an accept whose pull failed or crashed must retry; sync short-circuits (no fetch, no journal) when the recorded+linked digest already matches
+- Unreachable pull failures journal at info severity (Law 5: offline is expected operation), all other pull failures at error; GC of old bundles/ dirs is best-effort (failure costs disk, never correctness)
+
+## C2 enrollment
+- Enroll wire types live in reeve_types::reeve::enroll (additive) so device-api (serves) and reeve-agent (calls) share one shape; field names snake_case exactly as written in D4 step 1, response {device_id, device_token, resumed}
+- Route placement: POST /api/reeve/v1/enroll in crates/device-api behind an EnrollmentService trait (Law 2: no SQLite in device-api); join-token MANAGEMENT (POST/GET /api/join-tokens, DELETE /api/join-tokens/{token_hash}) in reeve-server behind human auth with role >= operator enforced in-handler
+- Idempotent re-run (same unexpired token + same hostname) returns the SAME device with a FRESH token — returning the same token is impossible since only its hash is stored; all prior device tokens are revoked in the same tx (D1: one live credential per device); the re-run consumes NO additional use (matched via devices.enrolled_with = join token hash)
+- Atomicity vs D4's 'one SQLite tx': all server-table writes (token validate + use count, device row, token revoke+issue) are ONE IMMEDIATE tx; the revision-store device-layer commit is sequenced AFTER on the store's own connection to the same DB file (Law 2 forbids reaching into its tables). Crash between the two leaves an enrolled device with an absent layer dir — semantically identical to an empty layer (D3: absence = inherit) and repaired by the idempotent retry
+- Initial desired state = empty device layer marker layers/30-device.<device_id>/.keep committed to the LOCAL stream as a whole-tree snapshot carrying the head forward; author 'system:enroll'; idempotent (present at head => no new revision)
+- Stale flagging (D4 wiped-box): plain-token enrollment sets stale=1 on every other device with the same hostname; idempotent re-run and re-enroll clear stale=0
+- device_id = 'dev-' + 16 lowercase hex (64 bits CSPRNG); PK collision fails the insert loudly rather than merging identities
+- Join tokens: 'rvj_' + 64 hex, sha256-hashed at rest, defaults 24h TTL / 1 use; DELETE revokes (sets revoked_at) rather than deleting rows (audit trail); enroll 401 is deliberately indistinguishable across unknown/expired/exhausted/revoked
+- Re-enroll token creation validates the target device exists (404 otherwise); binding enforced by FK with ON DELETE CASCADE
+- Agent: hostname detected from /proc/sys/kernel/hostname, /etc/hostname, then $HOSTNAME (no new dependency); reqwest 'json' feature added to reeve-agent; enroll subcommand parsed by hand (two required flags do not justify a CLI framework); server URL trailing slash trimmed before persisting

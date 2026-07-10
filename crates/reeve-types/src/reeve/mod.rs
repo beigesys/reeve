@@ -7,6 +7,7 @@
 //! flows to complete (§3.2 degradation rule).
 
 pub mod capabilities;
+pub mod enroll;
 pub mod events;
 pub mod health;
 pub mod manifest;
