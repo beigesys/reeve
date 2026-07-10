@@ -14,9 +14,12 @@ pub mod config;
 pub mod db;
 pub mod delivery;
 pub mod device_tokens;
+pub mod durability;
 pub mod enroll;
+pub mod ext;
 pub mod ingest;
 pub mod join_tokens;
+pub mod keyfile;
 pub mod ownership;
 pub mod presence;
 pub mod render;
@@ -46,21 +49,30 @@ pub fn bootstrap(cfg: Config) -> anyhow::Result<AppState> {
     let migrated = db::migrate(&mut conn)?;
     if migrated {
         // D16 schema law: a schema migration must cut a new snapshot
-        // generation. The durability tier (C6) consumes this signal.
-        info!("schema migrated; durability tier must cut a new snapshot generation (D16)");
+        // generation — durability::startup consumes migrated_at_boot.
+        info!("schema migrated; durability tier will cut a new snapshot generation (D16)");
     }
 
-    // Same file, second connection: revision-store self-initializes its
-    // own tables idempotently (Law 2 — the crate stands alone). WAL +
-    // busy_timeout arbitrate the two writers; C6 unifies them if the
-    // session-capture writer requires it.
-    let revisions = revision_store::RevisionStore::open(&db_path)
+    // Writer unification (D6/D16, spec/reeve/07-durability.md §9.3):
+    // ONE writer connection carries server tables AND revision-store
+    // tables, so the changeset session captures every write. The store
+    // locks the shared handle per call (Law 2 — the crate still stands
+    // alone via its owned-connection constructors).
+    let db = Arc::new(Mutex::new(conn));
+    let revisions = revision_store::RevisionStore::from_shared(db.clone())
         .map_err(|e| anyhow::anyhow!("opening revision store: {e}"))?;
+
+    // The C6 durability engine (tier from config; NoneDurability when
+    // disabled). Session capture (changeset tier) attaches to THE
+    // writer at the first generation cut.
+    let durability = durability::from_config(&cfg, db.clone())?;
 
     let state = AppState {
         cfg: Arc::new(cfg),
-        db: Arc::new(Mutex::new(conn)),
+        db,
         revisions: Arc::new(Mutex::new(revisions)),
+        durability,
+        migrated_at_boot: migrated,
         setup_token_hash: Arc::new(Mutex::new(None)),
         // v1 single-tier: root owns every authorable path; the upstream
         // stream is refused structurally regardless (federation §8.2).
@@ -77,11 +89,36 @@ pub fn bootstrap(cfg: Config) -> anyhow::Result<AppState> {
     Ok(state)
 }
 
+/// Options for [`run_with_options`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunOptions {
+    /// `--restore-from-target`: with NO local DB and a configured
+    /// durability target, restore the latest generation before normal
+    /// startup — THE DR procedure (spec/reeve/07-durability.md §9.5).
+    pub restore_from_target: bool,
+}
+
 /// Run the server until killed. No shutdown ceremony (Law 3): SIGTERM and
 /// ctrl-c log and exit; startup is the recovery path.
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
+    run_with_options(cfg, RunOptions::default()).await
+}
+
+/// [`run`] with explicit startup options (restore-at-bootstrap, §9.5:
+/// disaster recovery is normal startup with one precondition removed).
+pub async fn run_with_options(cfg: Config, opts: RunOptions) -> anyhow::Result<()> {
     let listen = cfg.listen;
+
+    // §9.5 restore-at-bootstrap: runs BEFORE bootstrap so the restored
+    // file becomes the local DB that normal startup then migrates.
+    durability::maybe_restore_at_bootstrap(&cfg, opts.restore_from_target).await?;
+
     let state = bootstrap(cfg)?;
+
+    // D6/D16 startup sequencing: migrate (done in bootstrap) -> snapshot
+    // -> resume streaming; scheduled loops for snapshot/ship/verify.
+    durability::startup(&state.durability, state.migrated_at_boot).await;
+    durability::spawn_tasks(state.durability.clone(), &state.cfg.durability);
 
     let report = auth::bootstrap(&state)?;
     for notice in &report.notices {

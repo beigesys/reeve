@@ -48,10 +48,30 @@ pub fn build(state: AppState) -> Router {
         // Manual render kick (C4): re-render all devices at the current
         // head; operator+, enforced in the handler.
         .route("/api/render", post(render_kick))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::human_auth,
-        ));
+        // Durability status (C6, spec/reeve/07-durability.md §9.4:
+        // "last verified restore" + degraded flag MUST be surfaced in
+        // the API); viewer+, enforced in the handler.
+        .route(
+            "/api/durability/status",
+            get(crate::durability::status_route),
+        );
+    // Secrets operator surface (C7, spec/reeve/10-secrets.md §12.2):
+    // write-only — set/rotate (PUT, operator+), delete (operator+),
+    // metadata list (viewer+). No value read-back route exists.
+    #[cfg(feature = "ext-secrets")]
+    let human = human
+        .route(
+            "/api/secrets",
+            put(crate::ext::secrets::put_route).get(crate::ext::secrets::list_route),
+        )
+        .route(
+            "/api/secrets/{scope}/{name}",
+            delete(crate::ext::secrets::delete_route),
+        );
+    let human = human.layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::human_auth,
+    ));
 
     // Device delivery surface (spec/reeve/08-packaging.md §10.2;
     // docs/decisions/delivery.md D7): the ONE device credential
@@ -81,11 +101,19 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/v2/reeve/bundles/{device_id}/blobs/{digest}",
             get(delivery::v2_blob),
-        )
-        .layer(middleware::from_fn_with_state(
-            token_store,
-            device_api::device_auth,
-        ));
+        );
+    // Secrets resolve endpoint (C7, spec/reeve/10-secrets.md §12.3):
+    // the single plaintext egress, behind the same device credential —
+    // a device can only ask as itself.
+    #[cfg(feature = "ext-secrets")]
+    let device = device.route(
+        reeve_types::reeve::secrets::SECRETS_RESOLVE_PATH,
+        post(crate::ext::secrets::resolve_route),
+    );
+    let device = device.layer(middleware::from_fn_with_state(
+        token_store,
+        device_api::device_auth,
+    ));
 
     // Device-facing enrollment (D4; spec/reeve/01-framework.md §3.8
     // item 1): POST /api/reeve/v1/enroll, no device_auth layer — the

@@ -182,3 +182,58 @@ fn open_mode_matches_d6() {
         .unwrap();
     assert_eq!(mode.to_lowercase(), "wal");
 }
+
+/// D16 writer unification (spec/reeve/07-durability.md §9.3): the store
+/// can run over a caller-owned shared connection — revision writes then
+/// happen on THE single writer connection, visible to raw SQL on the
+/// same handle (what session capture requires).
+#[test]
+fn from_shared_uses_the_callers_connection() {
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempfile::tempdir().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("shared.db")).unwrap();
+    let shared = Arc::new(Mutex::new(conn));
+
+    let mut store = revision_store::RevisionStore::from_shared(shared.clone()).unwrap();
+    store
+        .commit(
+            [("a.txt", b"one".as_slice())],
+            "t",
+            "m",
+            revision_store::Stream::Local,
+        )
+        .unwrap();
+
+    // Same connection sees the revision without reopening the file.
+    let n: i64 = shared
+        .lock()
+        .unwrap()
+        .query_row("SELECT count(*) FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // Reads still work through the store while the Arc is shared.
+    let head = store.head(revision_store::Stream::Local).unwrap().unwrap();
+    assert_eq!(
+        store.read_at(head, "a.txt").unwrap().unwrap(),
+        b"one".to_vec()
+    );
+}
+
+/// Additive owned-connection constructor: schema self-initializes,
+/// behavior identical to `open`.
+#[test]
+fn from_connection_owns_and_initializes() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut store = revision_store::RevisionStore::from_connection(conn).unwrap();
+    let id = store
+        .commit(
+            [("x", b"y".as_slice())],
+            "t",
+            "m",
+            revision_store::Stream::Local,
+        )
+        .unwrap();
+    assert_eq!(store.head(revision_store::Stream::Local).unwrap(), Some(id));
+}

@@ -4,6 +4,23 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Extension boundary (docs/build-charter.md CODE BOUNDARY): whole
+# modules behind cargo features, default ON; core never depends on ext
+# items. ext-durability-changeset gates ONLY the seconds-RPO changeset
+# CAPTURE tier (spec/reeve/07-durability.md §9.3) — the snapshot tier,
+# restore, replay and verify-restore are CORE (§9.2/§9.4/§9.5), so a
+# --no-default-features binary can still restore targets written by a
+# changeset-enabled one.
+default = ["ext-durability-changeset", "ext-secrets"]
+ext-durability-changeset = []
+# REV-009 secrets vault (spec/reeve/10-secrets.md, C7): AEAD-encrypted
+# secrets table under the D15 keyfile, device resolve endpoint,
+# operator write-only API, and the render-time per-app secrets_version
+# hook. Core (--no-default-features) still builds and serves manifests
+# with `secretsVersion` absent.
+ext-secrets = []
+
 [dependencies]
 reeve-types = { path = "../reeve-types" }
 margo-package = { path = "../margo-package" }
@@ -11,9 +28,16 @@ desired-state = { path = "../desired-state" }
 revision-store = { path = "../revision-store" }
 device-api = { path = "../device-api" }
 axum = { workspace = true }
-rusqlite = { workspace = true }
+# "hooks" on top of the workspace pin: the changeset tier counts writer
+# commits via commit_hook (spec/reeve/07-durability.md §9.3 "every N
+# seconds or M commits"). Additive feature, harmless when unused.
+rusqlite = { workspace = true, features = ["hooks"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# C7 ext-secrets: parse rendered deployment.yaml to collect
+# `${secret:<name>}` parameter references (same parser family as
+# reeve-agent's B4 ext/secrets.rs). Already in-tree via reeve-types.
+serde_yaml_ng = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -32,6 +56,12 @@ tempfile = "3"
 # single-static-binary goal) — mirrors reeve-agent's pin.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
+# C6 durability (spec/reeve/07-durability.md): object-store shipping,
+# pure-Rust AEAD under the D15 keyfile, timestamped generation ids.
+object_store = { workspace = true }
+url = "2"
+chacha20poly1305 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

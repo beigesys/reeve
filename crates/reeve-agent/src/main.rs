@@ -24,6 +24,39 @@ struct ExtHooks {
     /// references are then deferred/held by `sync_env`.
     #[cfg(feature = "ext-secrets")]
     secrets: Option<reeve_agent::ext::secrets::SecretResolver>,
+    /// ext-channel (REV-001): the persistent-channel task's nudge
+    /// signal + rate limiter. `None` for `dir://` sources and
+    /// unenrolled agents — the channel changes NOTHING about
+    /// convergence either way (spec/reeve/02-channel.md §4.6).
+    #[cfg(feature = "ext-channel")]
+    channel: Option<reeve_agent::ext::channel::ChannelRuntime>,
+    /// ext-terminal (REV-002): enablement gate + live-session
+    /// registry. The gate exists whenever the feature is compiled
+    /// in; ENABLEMENT comes only from desired state, re-evaluated
+    /// after every converge pass (spec/reeve/03-terminal.md §5.2).
+    #[cfg(feature = "ext-terminal")]
+    terminal: Option<std::sync::Arc<reeve_agent::ext::terminal::TerminalGate>>,
+}
+
+/// Wait between cycles: the poll interval tick, or — with the
+/// channel up — a rate-limited nudge (spec/reeve/02-channel.md §4.4;
+/// polling stays the correctness path, Law 5).
+#[cfg(feature = "ext-channel")]
+async fn wait_next_cycle(interval: Duration, hooks: &mut ExtHooks) {
+    use reeve_agent::ext::channel::{CycleTrigger, next_cycle};
+    match hooks.channel.as_mut() {
+        Some(ch) => {
+            if next_cycle(interval, ch).await == CycleTrigger::Nudge {
+                info!("nudge: fetch-and-converge now (spec/reeve/02-channel.md §4.4)");
+            }
+        }
+        None => tokio::time::sleep(interval).await,
+    }
+}
+
+#[cfg(not(feature = "ext-channel"))]
+async fn wait_next_cycle(interval: Duration, _hooks: &mut ExtHooks) {
+    tokio::time::sleep(interval).await;
 }
 
 /// Ensure the last-accepted manifest's bundle is pulled + swapped
@@ -72,6 +105,15 @@ async fn converge_and_report(
     if !reports.is_empty() {
         info!(acted_on = reports.len(), "converge pass acted");
         record_reports(db, &reports);
+    }
+    // ext-terminal (REV-002): re-evaluate enablement from the state
+    // just converged — the agent's terminal gate follows its LAST
+    // CONVERGED desired state, online or offline, and converging to
+    // a disabling commit terminates live sessions
+    // (spec/reeve/03-terminal.md §5.2).
+    #[cfg(feature = "ext-terminal")]
+    if let Some(gate) = &hooks.terminal {
+        reeve_agent::ext::terminal::sync_enablement(gate, store.current_path());
     }
     // Flush unsent status rows every cycle (store-and-forward,
     // spec/reeve/05-health-journal.md §7.3) — also drains the
@@ -177,6 +219,35 @@ async fn main() -> anyhow::Result<()> {
             info!("no secrets resolver (dir:// source or not enrolled); apps with secret references defer");
         }
     }
+    #[cfg(feature = "ext-channel")]
+    {
+        // Sub-channel consumers register here, BEFORE spawn — the
+        // hello frame advertises the registry's purposes.
+        #[cfg_attr(not(feature = "ext-terminal"), allow(unused_mut))]
+        let mut registry = reeve_agent::ext::channel::SubChannelRegistry::new();
+        // ext-terminal (REV-002): rev-002/terminal handler. The gate
+        // starts DISABLED and follows desired state only
+        // (spec/reeve/03-terminal.md §5.2) — installing the handler
+        // grants nothing by itself.
+        #[cfg(feature = "ext-terminal")]
+        {
+            hooks.terminal = Some(reeve_agent::ext::terminal::TerminalGate::install(
+                &mut registry,
+            ));
+        }
+        // The task probes for rev-001/1 itself, per attempt, on the
+        // §4.5 backoff schedule — never attempts the upgrade against
+        // a server that doesn't advertise it (§4.1), and never blocks
+        // startup or the first converge (§4.6).
+        hooks.channel = reeve_agent::ext::channel::spawn(
+            &config.server,
+            config.device_token.clone(),
+            registry,
+        );
+        if hooks.channel.is_none() {
+            info!("no channel (dir:// source or not enrolled); presence/nudges unavailable (spec/reeve/02-channel.md §4.6)");
+        }
+    }
 
     // First converge BEFORE the first poll: startup IS recovery
     // (Law 3 — any non-terminal phase re-runs) and must work from
@@ -230,6 +301,9 @@ async fn main() -> anyhow::Result<()> {
         }
         converge_and_report(&mut db, &config.data_dir, &store, &provider, sink.as_ref(), &hooks)
             .await;
-        tokio::time::sleep(interval).await;
+        // Interval tick, or a rate-limited channel nudge (§4.4) —
+        // either way the next iteration is a full poll+converge, so
+        // the gap between polls never exceeds the interval.
+        wait_next_cycle(interval, &mut hooks).await;
     }
 }

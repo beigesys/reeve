@@ -39,12 +39,17 @@ use crate::state::AppState;
 /// }
 /// ```
 ///
-/// No server-side wire extension is implemented yet, so the list is
-/// empty — we advertise only what is actually compiled in (§3.3: a
-/// capability advertised must be usable; an empty list degrades every
-/// agent to pure Margo behavior, which is exactly the truth today).
+/// We advertise only what is actually compiled in (§3.3: a capability
+/// advertised must be usable; a core --no-default-features build
+/// advertises nothing and every agent degrades to pure Margo behavior).
 pub fn server_capabilities() -> ServerCapabilities {
-    let extensions: Vec<String> = Vec::new();
+    use reeve_types::reeve::capabilities::{format_extension, rev};
+    #[allow(unused_mut)]
+    let mut extensions: Vec<String> = Vec::new();
+    // rev-009/1 Secrets (spec/reeve/10-secrets.md §12.3, C7).
+    if cfg!(feature = "ext-secrets") {
+        extensions.push(format_extension(rev::SECRETS, 1));
+    }
     ServerCapabilities {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         extensions,
@@ -327,6 +332,12 @@ mod tests {
     fn capabilities_shape() {
         let caps = server_capabilities();
         assert_eq!(caps.server_version, env!("CARGO_PKG_VERSION"));
-        assert!(caps.extensions.is_empty(), "advertise only compiled-in extensions");
+        // Advertise exactly what is compiled in (01-framework §3.3).
+        assert_eq!(
+            caps.extensions.contains(&"rev-009/1".to_string()),
+            cfg!(feature = "ext-secrets"),
+            "rev-009 advertised iff ext-secrets is compiled in: {:?}",
+            caps.extensions
+        );
     }
 }

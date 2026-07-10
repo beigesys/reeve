@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -120,8 +121,22 @@ pub fn digest_of(bytes: &[u8]) -> String {
 
 /// Content-addressed blob store + append-only revision log in one SQLite
 /// file. Single writer (D14); wrap in your own pool for reads if needed.
+///
+/// Connection ownership comes in two flavors (both additive, D16 writer
+/// unification for spec/reeve/07-durability.md §9.3 session capture —
+/// changeset capture requires ALL writes on ONE connection):
+/// - [`RevisionStore::open`] / [`RevisionStore::from_connection`]: the
+///   store owns its connection (standalone use, this crate's tests).
+/// - [`RevisionStore::from_shared`]: the store locks a caller-owned
+///   `Arc<Mutex<Connection>>` per call — THE single writer connection
+///   shared with the embedding server's own tables.
 pub struct RevisionStore {
-    conn: Connection,
+    conn: ConnHandle,
+}
+
+enum ConnHandle {
+    Owned(Connection),
+    Shared(Arc<Mutex<Connection>>),
 }
 
 // Schema: explicit PRIMARY KEY on every table (D16). Plain rowid tables
@@ -163,7 +178,45 @@ impl RevisionStore {
             conn.pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))?;
         conn.pragma_update(None, "foreign_keys", "on")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        Ok(Self { conn: ConnHandle::Owned(conn) })
+    }
+
+    /// Build a store over an already-open connection the store then OWNS.
+    /// The caller is responsible for open mode (pragmas); the store only
+    /// ensures its own schema (idempotent). Additive constructor for D16
+    /// writer unification.
+    pub fn from_connection(conn: Connection) -> Result<Self, Error> {
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn: ConnHandle::Owned(conn) })
+    }
+
+    /// Build a store over a SHARED writer connection — THE single writer
+    /// of docs/decisions/storage.md D6/D16, so the SQLite session
+    /// extension attached to it captures revision writes too
+    /// (spec/reeve/07-durability.md §9.3). The store locks per call and
+    /// never holds the lock across calls; the caller is responsible for
+    /// open mode (pragmas). Ensures the store schema (idempotent).
+    pub fn from_shared(conn: Arc<Mutex<Connection>>) -> Result<Self, Error> {
+        conn.lock()
+            .expect("shared connection mutex poisoned")
+            .execute_batch(SCHEMA)?;
+        Ok(Self { conn: ConnHandle::Shared(conn) })
+    }
+
+    /// Run a read against the connection (locking if shared).
+    fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T, Error>) -> Result<T, Error> {
+        match &self.conn {
+            ConnHandle::Owned(c) => f(c),
+            ConnHandle::Shared(m) => f(&m.lock().expect("shared connection mutex poisoned")),
+        }
+    }
+
+    /// Run a write against the connection (locking if shared).
+    fn write<T>(&mut self, f: impl FnOnce(&mut Connection) -> Result<T, Error>) -> Result<T, Error> {
+        match &mut self.conn {
+            ConnHandle::Owned(c) => f(c),
+            ConnHandle::Shared(m) => f(&mut m.lock().expect("shared connection mutex poisoned")),
+        }
     }
 
     /// Commit a full tree manifest (path -> content) as a new revision on
@@ -192,9 +245,8 @@ impl RevisionStore {
             manifest.insert(path.into(), (digest, content));
         }
 
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        self.write(|conn| {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // Idempotency: identical content to the stream head => existing id.
         let head: Option<RevisionId> = tx
@@ -246,26 +298,28 @@ impl RevisionStore {
 
         tx.commit()?;
         Ok(id)
+        })
     }
 
     /// Current head (highest id) of a stream, if any revision exists.
     pub fn head(&self, stream: Stream) -> Result<Option<RevisionId>, Error> {
-        let head: Option<RevisionId> = self
-            .conn
-            .query_row(
-                "SELECT MAX(id) FROM revisions WHERE stream = ?1",
-                params![stream.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(head)
+        self.read(|conn| {
+            let head: Option<RevisionId> = conn
+                .query_row(
+                    "SELECT MAX(id) FROM revisions WHERE stream = ?1",
+                    params![stream.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            Ok(head)
+        })
     }
 
     /// Metadata for one revision.
     pub fn revision(&self, id: RevisionId) -> Result<Revision, Error> {
-        self.conn
-            .query_row(
+        self.read(|conn| {
+            conn.query_row(
                 "SELECT id, stream, parent_id, author, message, created_at
                  FROM revisions WHERE id = ?1",
                 params![id],
@@ -273,29 +327,33 @@ impl RevisionStore {
             )
             .optional()?
             .ok_or(Error::UnknownRevision(id))
+        })
     }
 
     /// Content of `path` at `revision`. `Ok(None)` if the revision exists
     /// but does not contain the path; error if the revision is unknown.
     pub fn read_at(&self, revision: RevisionId, path: &str) -> Result<Option<Vec<u8>>, Error> {
-        self.assert_revision(revision)?;
-        let content: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT b.content
-                 FROM revision_files rf JOIN blobs b ON b.digest = rf.digest
-                 WHERE rf.revision_id = ?1 AND rf.path = ?2",
-                params![revision, path],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(content)
+        self.read(|conn| {
+            assert_revision_on(conn, revision)?;
+            let content: Option<Vec<u8>> = conn
+                .query_row(
+                    "SELECT b.content
+                     FROM revision_files rf JOIN blobs b ON b.digest = rf.digest
+                     WHERE rf.revision_id = ?1 AND rf.path = ?2",
+                    params![revision, path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(content)
+        })
     }
 
     /// Full manifest (path -> digest) of a revision.
     pub fn tree_at(&self, revision: RevisionId) -> Result<BTreeMap<String, String>, Error> {
-        self.assert_revision(revision)?;
-        tree_at_tx(&self.conn, revision)
+        self.read(|conn| {
+            assert_revision_on(conn, revision)?;
+            tree_at_tx(conn, revision)
+        })
     }
 
     /// Diff between two revisions' manifests, computed on read (D13).
@@ -333,21 +391,24 @@ impl RevisionStore {
     /// relative to that revision's parent in its own chain — blame as a
     /// query (D13). `digest: None` marks a removal.
     pub fn blame(&self, path: &str) -> Result<Vec<BlameEntry>, Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.stream, r.parent_id, r.author, r.message, r.created_at,
-                    rf.digest
-             FROM revisions r
-             LEFT JOIN revision_files rf
-                    ON rf.revision_id = r.id AND rf.path = ?1
-             ORDER BY r.id ASC",
-        )?;
-        let rows: Vec<(Revision, Option<String>)> = stmt
-            .query_map(params![path], |row| {
-                let digest: Option<String> = row.get(6)?;
-                let rev = revision_from_row(row)?;
-                Ok((rev, digest))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows: Vec<(Revision, Option<String>)> = self.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT r.id, r.stream, r.parent_id, r.author, r.message, r.created_at,
+                        rf.digest
+                 FROM revisions r
+                 LEFT JOIN revision_files rf
+                        ON rf.revision_id = r.id AND rf.path = ?1
+                 ORDER BY r.id ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![path], |row| {
+                    let digest: Option<String> = row.get(6)?;
+                    let rev = revision_from_row(row)?;
+                    Ok((rev, digest))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })?;
 
         // id -> digest-at-that-revision, for parent lookups.
         let by_id: BTreeMap<RevisionId, Option<String>> = rows
@@ -370,31 +431,31 @@ impl RevisionStore {
 
     /// Fetch a blob by digest, if present.
     pub fn blob(&self, digest: &str) -> Result<Option<Vec<u8>>, Error> {
-        let content: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT content FROM blobs WHERE digest = ?1",
-                params![digest],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(content)
+        self.read(|conn| {
+            let content: Option<Vec<u8>> = conn
+                .query_row(
+                    "SELECT content FROM blobs WHERE digest = ?1",
+                    params![digest],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(content)
+        })
     }
+}
 
-    fn assert_revision(&self, id: RevisionId) -> Result<(), Error> {
-        let exists: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM revisions WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_some() {
-            Ok(())
-        } else {
-            Err(Error::UnknownRevision(id))
-        }
+fn assert_revision_on(conn: &Connection, id: RevisionId) -> Result<(), Error> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM revisions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if exists.is_some() {
+        Ok(())
+    } else {
+        Err(Error::UnknownRevision(id))
     }
 }
 

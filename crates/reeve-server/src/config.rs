@@ -13,6 +13,21 @@
 //!   ${REEVE_REGISTRY} at render time (docs/decisions/delivery.md D8;
 //!   declared render input, tree-render.md D3); default
 //!   localhost:<listen port>
+//!
+//! Durability (C6, spec/reeve/07-durability.md — tiers are config, not
+//! surgery, §9.1):
+//! - REEVE_DURABILITY            none (default) | snapshot | changeset
+//! - REEVE_DURABILITY_TARGET     object-store url: s3://bucket/prefix,
+//!   file:///abs/path, or a plain filesystem path (test/air-gap tier);
+//!   REQUIRED for any tier other than none
+//! - REEVE_DURABILITY_INSTANCE   key namespace `reeve/<instance>/…`
+//!   at the target; default "default"
+//! - REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS   default 900 (§9.2)
+//! - REEVE_DURABILITY_RETAIN_DAYS              default 7 (§9.2)
+//! - REEVE_DURABILITY_RETAIN_MIN_GENERATIONS   default 8 (§9.2)
+//! - REEVE_DURABILITY_CHANGESET_INTERVAL_SECS  default 5 (§9.3)
+//! - REEVE_DURABILITY_CHANGESET_COMMITS        default 100 (§9.3)
+//! - REEVE_DURABILITY_VERIFY_INTERVAL_SECS     default 86400 (§9.4)
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -57,6 +72,54 @@ pub struct Config {
     /// input (tree-render.md D3) — it enters render via `RenderContext`,
     /// never via environment reads in the render path.
     pub registry_endpoint: String,
+    /// Durability tier configuration (C6, spec/reeve/07-durability.md).
+    pub durability: DurabilityConfig,
+}
+
+/// Durability tier selection (spec/reeve/07-durability.md §9.1: tiers
+/// `none` | `snapshot` | `snapshot+changeset` are config, not surgery).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurabilityTier {
+    None,
+    Snapshot,
+    /// Snapshot + seconds-RPO changeset streaming (§9.3). Requires the
+    /// `ext-durability-changeset` cargo feature; a core-only binary
+    /// refuses startup with this tier configured.
+    Changeset,
+}
+
+#[derive(Debug, Clone)]
+pub struct DurabilityConfig {
+    pub tier: DurabilityTier,
+    /// Object-store target url (§9.2): `s3://…`, `file://…`, or a plain
+    /// filesystem path. `Some` iff tier != None (validated at parse).
+    pub target: Option<String>,
+    /// Key namespace at the target: `reeve/<instance>/…`.
+    pub instance: String,
+    pub snapshot_interval_secs: u64,
+    pub retain_days: u64,
+    pub retain_min_generations: u64,
+    pub changeset_interval_secs: u64,
+    pub changeset_commits: u64,
+    pub verify_interval_secs: u64,
+}
+
+impl DurabilityConfig {
+    /// The disabled tier — what absent env yields, and what tests that
+    /// don't exercise durability use.
+    pub fn disabled() -> Self {
+        DurabilityConfig {
+            tier: DurabilityTier::None,
+            target: None,
+            instance: "default".into(),
+            snapshot_interval_secs: 900,
+            retain_days: 7,
+            retain_min_generations: 8,
+            changeset_interval_secs: 5,
+            changeset_commits: 100,
+            verify_interval_secs: 86_400,
+        }
+    }
 }
 
 impl Config {
@@ -123,12 +186,50 @@ impl Config {
         let registry_endpoint =
             get("REEVE_REGISTRY").unwrap_or_else(|| format!("localhost:{}", listen.port()));
 
+        let durability = Self::durability_from_lookup(&get)?;
+
         Ok(Config {
             listen,
             data_dir,
             auth,
             session_ttl_secs,
             registry_endpoint,
+            durability,
+        })
+    }
+
+    fn durability_from_lookup(
+        get: &impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<DurabilityConfig> {
+        let tier = match get("REEVE_DURABILITY").as_deref().unwrap_or("none") {
+            "none" => DurabilityTier::None,
+            "snapshot" => DurabilityTier::Snapshot,
+            "changeset" => DurabilityTier::Changeset,
+            other => bail!("REEVE_DURABILITY must be none|snapshot|changeset, got {other:?}"),
+        };
+        let target = get("REEVE_DURABILITY_TARGET");
+        if tier != DurabilityTier::None && target.is_none() {
+            // Fail closed at startup, not at first snapshot: a tier
+            // without a target is a misconfiguration, not a degraded
+            // state (spec/reeve/07-durability.md §9.2).
+            bail!("REEVE_DURABILITY={tier:?} requires REEVE_DURABILITY_TARGET");
+        }
+        let parse_u64 = |key: &str, default: u64| -> anyhow::Result<u64> {
+            match get(key) {
+                Some(v) => v.parse().with_context(|| format!("{key} must be an integer")),
+                None => Ok(default),
+            }
+        };
+        Ok(DurabilityConfig {
+            tier,
+            target,
+            instance: get("REEVE_DURABILITY_INSTANCE").unwrap_or_else(|| "default".into()),
+            snapshot_interval_secs: parse_u64("REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS", 900)?,
+            retain_days: parse_u64("REEVE_DURABILITY_RETAIN_DAYS", 7)?,
+            retain_min_generations: parse_u64("REEVE_DURABILITY_RETAIN_MIN_GENERATIONS", 8)?,
+            changeset_interval_secs: parse_u64("REEVE_DURABILITY_CHANGESET_INTERVAL_SECS", 5)?,
+            changeset_commits: parse_u64("REEVE_DURABILITY_CHANGESET_COMMITS", 100)?,
+            verify_interval_secs: parse_u64("REEVE_DURABILITY_VERIFY_INTERVAL_SECS", 86_400)?,
         })
     }
 }
@@ -193,5 +294,45 @@ mod tests {
     #[test]
     fn bad_mode_is_an_error() {
         assert!(cfg(&[("REEVE_AUTH", "oidc")]).is_err());
+    }
+
+    #[test]
+    fn durability_defaults_to_none() {
+        let c = cfg(&[]).unwrap();
+        assert_eq!(c.durability.tier, DurabilityTier::None);
+        assert_eq!(c.durability.snapshot_interval_secs, 900);
+        assert_eq!(c.durability.retain_days, 7);
+        assert_eq!(c.durability.retain_min_generations, 8);
+        assert_eq!(c.durability.changeset_interval_secs, 5);
+        assert_eq!(c.durability.changeset_commits, 100);
+        assert_eq!(c.durability.verify_interval_secs, 86_400);
+    }
+
+    #[test]
+    fn durability_tier_without_target_refuses_startup() {
+        let err = cfg(&[("REEVE_DURABILITY", "snapshot")]).unwrap_err();
+        assert!(err.to_string().contains("REEVE_DURABILITY_TARGET"));
+        let err = cfg(&[("REEVE_DURABILITY", "changeset")]).unwrap_err();
+        assert!(err.to_string().contains("REEVE_DURABILITY_TARGET"));
+    }
+
+    #[test]
+    fn durability_tier_with_target_parses() {
+        let c = cfg(&[
+            ("REEVE_DURABILITY", "changeset"),
+            ("REEVE_DURABILITY_TARGET", "s3://bucket/prefix"),
+            ("REEVE_DURABILITY_INSTANCE", "edge-1"),
+            ("REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS", "60"),
+        ])
+        .unwrap();
+        assert_eq!(c.durability.tier, DurabilityTier::Changeset);
+        assert_eq!(c.durability.target.as_deref(), Some("s3://bucket/prefix"));
+        assert_eq!(c.durability.instance, "edge-1");
+        assert_eq!(c.durability.snapshot_interval_secs, 60);
+    }
+
+    #[test]
+    fn bad_durability_tier_is_an_error() {
+        assert!(cfg(&[("REEVE_DURABILITY", "litestream")]).is_err());
     }
 }

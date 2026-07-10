@@ -11,5 +11,9 @@
 //! public seams (e.g. mutating [`crate::converge::Desired`] before a
 //! converge pass).
 
+#[cfg(feature = "ext-channel")]
+pub mod channel;
 #[cfg(feature = "ext-secrets")]
 pub mod secrets;
+#[cfg(feature = "ext-terminal")]
+pub mod terminal;

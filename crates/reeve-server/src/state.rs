@@ -10,14 +10,26 @@ use crate::ownership::Ownership;
 
 /// Cloneable handle threaded through every route.
 ///
-/// Locking: `db` is the server-tables writer connection (D6 single-writer
-/// discipline); `revisions` is the revision store's own connection to the
-/// same file. Locks are short and never held across `.await`.
+/// Locking: `db` is THE single writer connection (D6/D16 — server
+/// tables AND revision-store tables; the durability changeset session
+/// rides it, spec/reeve/07-durability.md §9.3). `revisions` wraps the
+/// SAME connection via `RevisionStore::from_shared` and locks `db`
+/// internally per call. Lock order: `revisions` may be held while a
+/// store method briefly takes `db`; code holding `db` MUST NOT call
+/// into `revisions` (one-direction rule — no cycles). Locks are short
+/// and never held across `.await`.
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub db: Arc<Mutex<Connection>>,
     pub revisions: Arc<Mutex<revision_store::RevisionStore>>,
+    /// The C6 durability engine (spec/reeve/07-durability.md §9.1 —
+    /// ONE trait seam; tier selected by config).
+    pub durability: Arc<dyn crate::durability::Durability>,
+    /// True when this boot applied schema migrations — D16: a schema
+    /// migration must cut a new snapshot generation (durability::startup
+    /// consumes this).
+    pub migrated_at_boot: bool,
     /// sha256 hex of the one-time first-boot setup token (password mode,
     /// zero users). In memory only: a crash mints a fresh one on restart
     /// (crash-only — nothing to persist, startup regenerates).

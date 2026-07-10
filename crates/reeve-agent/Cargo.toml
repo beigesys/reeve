@@ -10,10 +10,20 @@ license.workspace = true
 # extension, all default-ON. Core (poll, pull, converge, compose
 # provider, status) never depends on ext items — the
 # --no-default-features build is the compiler-enforced proof.
-default = ["ext-secrets"]
+default = ["ext-secrets", "ext-channel", "ext-terminal"]
 # REV-009 secrets: resolve-endpoint fetch + per-service env
 # materialization (spec/reeve/10-secrets.md §12.3).
 ext-secrets = []
+# REV-001 persistent agent channel: outbound websocket for presence,
+# nudges, and multiplexed sub-channels (spec/reeve/02-channel.md §4).
+# ext-terminal (REV-002, B6) MUST depend on this feature — the
+# terminal is a sub-channel consumer, never its own socket (§4.2).
+ext-channel = ["dep:tokio-tungstenite", "dep:futures-util"]
+# REV-002 remote terminal: PTY sessions over a rev-002/terminal
+# sub-channel, enabled ONLY via desired state
+# (spec/reeve/03-terminal.md §5). Depends on ext-channel per the
+# extension feature graph.
+ext-terminal = ["ext-channel", "dep:portable-pty"]
 
 [dependencies]
 reeve-types = { path = "../reeve-types" }
@@ -37,7 +47,20 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # CLAUDE.md single-static-binary goal).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
+# B5 channel (ext-channel only): outbound websocket client, rustls
+# like reqwest above (musl-friendly, no openssl).
+# 0.29 = the exact version axum 0.8's ws feature uses (one copy in
+# the tree; the dev-dep mock server and this client stay in lockstep).
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
+# B6 terminal (ext-terminal only): portable PTY open/spawn/resize
+# (spec/reeve/03-terminal.md §5.1/§5.3). Pinned exact per the build
+# charter's version-pinning rule.
+portable-pty = { version = "=0.9.0", optional = true }
 
 [dev-dependencies]
-axum = { workspace = true }
+# "ws" for the mock channel server in ext::channel tests (B5);
+# "test-util" for paused-clock nudge/backoff timing tests.
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"

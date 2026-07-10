@@ -23,7 +23,7 @@
 //! inserts are `INSERT OR IGNORE` (content-addressed, idempotent);
 //! unreferenced blobs are purged at startup, never mid-flight.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use desired_state::{FileSet, RenderContext, deployment_id};
 use reeve_types::reeve::manifest::{
@@ -130,6 +130,15 @@ impl DeviceRow {
     }
 }
 
+/// Settings key marking that an OUT-OF-BAND render input changed (a
+/// secrets write, C7 — spec/reeve/10-secrets.md §12.4) and the
+/// propagating render pass may not have completed. Writers set it in
+/// the SAME transaction as the input write; [`render_all`] clears it
+/// when a full pass completes under the same db lock (Law 3: a kill -9
+/// between the write and the pass leaves the flag, and startup
+/// [`reconcile`] runs the pass).
+pub const RENDER_DIRTY_KEY: &str = "render_dirty";
+
 /// Server epoch — high 16 bits of every manifestVersion. Stored in
 /// `settings.server_epoch`; absent means 0. Durability restore fencing
 /// (C6, spec/reeve/07-durability.md §9.5) owns bumping it.
@@ -161,6 +170,26 @@ pub fn content_digest(files: &FileSet) -> String {
         h.update(bytes);
     }
     format!("sha256:{:x}", h.finalize())
+}
+
+/// Fold a device's per-app secrets_version map into one change
+/// detector value (spec/reeve/10-secrets.md §12.4 — a rotation must
+/// bump manifestVersion even though no rendered byte changed). `None`
+/// when no rendered app references a secret (and always in core
+/// builds), so existing rows see no spurious bump.
+fn secrets_digest(secret_versions: &BTreeMap<String, String>) -> Option<String> {
+    if secret_versions.is_empty() {
+        return None;
+    }
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    for (app, sv) in secret_versions {
+        h.update((app.len() as u64).to_le_bytes());
+        h.update(app.as_bytes());
+        h.update((sv.len() as u64).to_le_bytes());
+        h.update(sv.as_bytes());
+    }
+    Some(format!("sha256:{:x}", h.finalize()))
 }
 
 /// Pack a rendered file set as a canonical/deterministic tar.gz
@@ -209,6 +238,24 @@ fn app_names(files: &FileSet) -> BTreeSet<String> {
         .collect()
 }
 
+/// The State Manifest `apps` list for one device. `secrets_version` is
+/// present iff the app's rendered deployment.yaml references secrets
+/// (spec/reeve/10-secrets.md §12.4, ext-secrets/C7); always absent in
+/// core builds.
+fn app_entries(
+    apps: &BTreeSet<String>,
+    dev: &DeviceRow,
+    secret_versions: &BTreeMap<String, String>,
+) -> Vec<AppManifestEntry> {
+    apps.iter()
+        .map(|a| AppManifestEntry {
+            app_id: a.clone(),
+            deployment_id: Some(deployment_id(&dev.device_id, a).to_string()),
+            secrets_version: secret_versions.get(a).cloned(),
+        })
+        .collect()
+}
+
 /// Render one device against an already-loaded tree, inside the given
 /// connection. One transaction per updated device (Law 3).
 fn render_one(
@@ -219,17 +266,17 @@ fn render_one(
     registry_endpoint: &str,
     dev: &DeviceRow,
 ) -> Result<Outcome, PipelineError> {
-    let stored: Option<(i64, i64, String)> = conn
+    let stored: Option<(i64, i64, String, Option<String>, String)> = conn
         .query_row(
-            "SELECT counter, generation, content_digest
+            "SELECT counter, generation, content_digest, secrets_digest, manifest_json
              FROM device_manifests WHERE device_id = ?1",
             params![dev.device_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let (counter, generation, prev_content) = match &stored {
-        Some((c, g, d)) => (*c, *g, Some(d.as_str())),
-        None => (0, 0, None),
+    let (counter, generation, prev_content, prev_secrets) = match &stored {
+        Some((c, g, d, s, _)) => (*c, *g, Some(d.as_str()), s.clone()),
+        None => (0, 0, None, None),
     };
 
     let ctx = RenderContext {
@@ -248,8 +295,31 @@ fn render_one(
         Err(e) => return Ok(Outcome::Failed(e.to_string())),
     };
 
+    // ext-secrets render hook (spec/reeve/10-secrets.md §12.4): per-app
+    // secrets_version = hash of the (name, version) pairs this app's
+    // rendered `${secret:<name>}` references resolve to down THIS
+    // device's chain. It joins the change-detection digest below, so a
+    // rotation bumps manifestVersion for exactly the referencing
+    // devices — with the bundle digest unchanged (no re-pull, agent
+    // does a minimal re-up per B4). Core builds (--no-default-features)
+    // compute nothing and leave secretsVersion absent.
+    #[cfg(feature = "ext-secrets")]
+    let secret_versions: BTreeMap<String, String> = crate::ext::secrets::app_secrets_versions(
+        conn,
+        &out,
+        &crate::ext::secrets::device_chain(
+            &dev.device_id,
+            dev.class.as_deref(),
+            dev.region.as_deref(),
+            dev.site.as_deref(),
+        ),
+    )?;
+    #[cfg(not(feature = "ext-secrets"))]
+    let secret_versions: BTreeMap<String, String> = BTreeMap::new();
+
     let cdig = content_digest(&out);
-    if prev_content == Some(cdig.as_str()) {
+    let sdig = secrets_digest(&secret_versions);
+    if prev_content == Some(cdig.as_str()) && prev_secrets == sdig {
         // D3: no-change re-render => no new bundle, no bump. Advance
         // only the revision bookkeeping so this pass isn't repeated.
         conn.execute(
@@ -261,12 +331,48 @@ fn render_one(
         return Ok(Outcome::Unchanged);
     }
 
-    // Material change: allocate the next manifestVersion (per-device
+    // Change of SOME kind: allocate the next manifestVersion (per-device
     // counter, monotonic; epoch from settings — §10.2 anti-rollback).
     let next_counter = counter + 1;
     let version = ManifestVersion::pack(epoch, next_counter as u64)?;
-
     let apps = app_names(&out);
+
+    if prev_content == Some(cdig.as_str()) {
+        // Secrets-only change (spec/reeve/10-secrets.md §12.4): no
+        // rendered byte moved, only resolved secret versions did. Keep
+        // the PREVIOUS bundle — digest, layer, generation, provenance —
+        // verbatim, and rewrite just the State Manifest: new
+        // manifestVersion + per-app secretsVersion. The agent sees
+        // "bundle digest unchanged + secrets_version changed" and does a
+        // re-resolve + minimal re-up, no re-pull (B4).
+        let (_, _, _, _, prev_json) = stored.as_ref().expect("prev_content implies a stored row");
+        let prev_manifest: StateManifest = serde_json::from_str(prev_json)?;
+        let manifest = StateManifest {
+            manifest_version: version,
+            bundle: prev_manifest.bundle,
+            apps: app_entries(&apps, dev, &secret_versions),
+        };
+        let manifest_json = serde_json::to_vec(&manifest)?;
+        let etag = digest_of(&manifest_json);
+        conn.execute(
+            "UPDATE device_manifests
+             SET manifest_version = ?2, counter = ?3, secrets_digest = ?4,
+                 manifest_json = ?5, etag = ?6, rendered_revision = ?7,
+                 updated_at = ?8
+             WHERE device_id = ?1",
+            params![
+                dev.device_id,
+                version.0 as i64,
+                next_counter,
+                sdig,
+                String::from_utf8(manifest_json).expect("serde_json emits UTF-8"),
+                etag,
+                head,
+                now_secs(),
+            ],
+        )?;
+        return Ok(Outcome::Updated(version));
+    }
     let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
     let (bundle_ref, bundle_digest, layer_digest) = if apps.is_empty() {
         // Margo DeploymentBundleRef null rule: zero apps => bundle is
@@ -311,18 +417,7 @@ fn render_one(
     let manifest = StateManifest {
         manifest_version: version,
         bundle: bundle_ref,
-        apps: apps
-            .iter()
-            .map(|a| AppManifestEntry {
-                app_id: a.clone(),
-                deployment_id: Some(deployment_id(&dev.device_id, a).to_string()),
-                // 10-secrets §12 lands with the secrets task; absent
-                // until then. A future secrets_version change MUST bump
-                // the version even with an unchanged bundle — it will
-                // enter content_digest's input set when implemented.
-                secrets_version: None,
-            })
-            .collect(),
+        apps: app_entries(&apps, dev, &secret_versions),
     };
     let manifest_json = serde_json::to_vec(&manifest)?;
     let etag = digest_of(&manifest_json);
@@ -341,14 +436,15 @@ fn render_one(
     tx.execute(
         "INSERT INTO device_manifests
              (device_id, manifest_version, counter, generation, content_digest,
-              bundle_digest, layer_digest, manifest_json, etag,
+              secrets_digest, bundle_digest, layer_digest, manifest_json, etag,
               rendered_revision, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(device_id) DO UPDATE SET
              manifest_version = excluded.manifest_version,
              counter = excluded.counter,
              generation = excluded.generation,
              content_digest = excluded.content_digest,
+             secrets_digest = excluded.secrets_digest,
              bundle_digest = excluded.bundle_digest,
              layer_digest = excluded.layer_digest,
              manifest_json = excluded.manifest_json,
@@ -361,6 +457,7 @@ fn render_one(
             next_counter,
             generation + 1,
             cdig,
+            sdig,
             bundle_digest,
             layer_digest,
             String::from_utf8(manifest_json).expect("serde_json emits UTF-8"),
@@ -441,6 +538,13 @@ pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![head.to_string()],
     )?;
+    // Out-of-band inputs written before this pass took the db lock were
+    // visible to every render above; later writers re-set the flag and
+    // kick their own pass (writes are serialized on the db mutex).
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![RENDER_DIRTY_KEY],
+    )?;
     Ok(report)
 }
 
@@ -490,7 +594,9 @@ pub fn ensure_current(state: &AppState, device_id: &str) -> Result<Outcome, Pipe
 
 /// Startup reconcile (Law 3: startup IS recovery):
 /// 1. If the local head moved past `settings.last_rendered_local`
-///    (a revision was committed but the render pass was killed), run a
+///    (a revision was committed but the render pass was killed), OR an
+///    out-of-band render input is flagged dirty ([`RENDER_DIRTY_KEY`] —
+///    a secrets write whose propagating pass was killed, §12.4), run a
 ///    full pass now.
 /// 2. Purge bundle blobs no manifest row references (failed/superseded
 ///    renders leave orphans only until the next startup).
@@ -508,7 +614,14 @@ pub fn reconcile(state: &AppState) -> Result<(), PipelineError> {
                 |r| r.get(0),
             )
             .optional()?;
-        last.and_then(|s| s.parse::<i64>().ok()) != Some(head)
+        let dirty: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![RENDER_DIRTY_KEY],
+                |r| r.get(0),
+            )
+            .optional()?;
+        dirty.is_some() || last.and_then(|s| s.parse::<i64>().ok()) != Some(head)
     };
     if needs_pass {
         let report = render_all(state)?;

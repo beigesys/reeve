@@ -55,6 +55,20 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "status",
         sql: include_str!("migrations/V4__status.sql"),
     },
+    EmbeddedMigration {
+        version: 5,
+        name: "durability",
+        sql: include_str!("migrations/V5__durability.sql"),
+    },
+    // The secrets table exists regardless of the ext-secrets feature
+    // (like V5 for the changeset tier): schema is stable across feature
+    // sets so a --no-default-features binary can still restore/verify a
+    // target written by a full one (spec/reeve/07-durability.md §9.4).
+    EmbeddedMigration {
+        version: 6,
+        name: "secrets",
+        sql: include_str!("migrations/V6__secrets.sql"),
+    },
 ];
 
 /// Open the server DB with the D6 pragmas. Idempotent.
@@ -125,6 +139,45 @@ pub fn migrate(conn: &mut Connection) -> anyhow::Result<bool> {
         }
     }
     Ok(applied_any)
+}
+
+/// Highest migration version embedded in this binary — the schema
+/// version stamped into snapshot generation ids
+/// (spec/reeve/07-durability.md §9.2).
+pub fn embedded_schema_version() -> i64 {
+    MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
+}
+
+/// Assert a (restored) database's schema is KNOWN TO THIS BINARY
+/// (spec/reeve/07-durability.md §9.4): every applied migration must
+/// exist in the embedded set with a matching checksum, and the max
+/// version must not exceed what this binary ships. Returns the
+/// database's schema version.
+pub fn assert_schema_known(conn: &Connection) -> anyhow::Result<i64> {
+    let mut stmt = conn
+        .prepare("SELECT version, checksum FROM refinery_schema_history ORDER BY version")
+        .context("restored DB has no refinery_schema_history — not a reeve database")?;
+    let applied: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    if applied.is_empty() {
+        bail!("restored DB has an empty migration history");
+    }
+    let mut max = 0;
+    for (version, cs) in &applied {
+        let Some(m) = MIGRATIONS.iter().find(|m| m.version == *version) else {
+            bail!("restored DB schema version {version} is unknown to this binary");
+        };
+        if *cs != checksum(m.sql) {
+            bail!(
+                "restored DB migration V{version}__{} checksum mismatch — \
+                 schema not produced by this binary's lineage",
+                m.name
+            );
+        }
+        max = max.max(*version);
+    }
+    Ok(max)
 }
 
 /// Seconds since the unix epoch — the timestamp unit for all server
