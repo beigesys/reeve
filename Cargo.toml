@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/reeve",
+    "crates/reeve-server",
     "crates/reeve-agent",
     "crates/reeve-types",
     "crates/margo-package",
