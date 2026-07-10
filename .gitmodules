@@ -1,0 +1,6 @@
+[submodule "spec"]
+	path = spec
+	url = https://github.com/margo/specification
+[submodule "reference"]
+	path = reference
+	url = https://github.com/margo/sandbox
