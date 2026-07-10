@@ -10,7 +10,7 @@ license.workspace = true
 # extension, all default-ON. Core (poll, pull, converge, compose
 # provider, status) never depends on ext items — the
 # --no-default-features build is the compiler-enforced proof.
-default = ["ext-secrets", "ext-channel", "ext-terminal"]
+default = ["ext-secrets", "ext-channel", "ext-terminal", "ext-health"]
 # REV-009 secrets: resolve-endpoint fetch + per-service env
 # materialization (spec/reeve/10-secrets.md §12.3).
 ext-secrets = []
@@ -24,6 +24,12 @@ ext-channel = ["dep:tokio-tungstenite", "dep:futures-util"]
 # (spec/reeve/03-terminal.md §5). Depends on ext-channel per the
 # extension feature graph.
 ext-terminal = ["ext-channel", "dep:portable-pty"]
+# REV-004 health sampler + status journal backfill (B7,
+# spec/reeve/05-health-journal.md §7). httpdate: parse the server
+# Date header for opportunistic clock-skew measurement (§7.2). libc
+# (statvfs, §7.2) became an unconditional dependency with B8 — the
+# core installer needs geteuid; see [dependencies].
+ext-health = ["dep:httpdate"]
 
 [dependencies]
 reeve-types = { path = "../reeve-types" }
@@ -57,6 +63,14 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # (spec/reeve/03-terminal.md §5.1/§5.3). Pinned exact per the build
 # charter's version-pinning rule.
 portable-pty = { version = "=0.9.0", optional = true }
+# B7 health sampler: statvfs disk usage (§7.2). B8 installer: the
+# `reeve-agent install` root check (geteuid). Unconditional since B8
+# because the installer is core (spec/reeve/08-packaging.md §10.3).
+# Pinned exact per the build charter's version-pinning rule (matches
+# the workspace lockfile's existing copy).
+libc = { version = "=0.2.186" }
+# B7 clock skew (ext-health only): RFC 7231 Date header parsing.
+httpdate = { version = "=1.0.3", optional = true }
 
 [dev-dependencies]
 # "ws" for the mock channel server in ext::channel tests (B5);
@@ -64,3 +78,8 @@ portable-pty = { version = "=0.9.0", optional = true }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
+# B8: validate the shipped example self-update package
+# (deploy/packages/reeve-agent/) against the same parser the server
+# uses (spec/reeve/08-packaging.md §10.5: "an ApplicationDescription
+# valid per margo-package").
+margo-package = { path = "../margo-package" }

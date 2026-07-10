@@ -25,6 +25,20 @@
 //!   file"). Written ONLY after the atomic dir swap (B2); startup
 //!   recovery rolls it forward from disk if a `kill -9` landed
 //!   between swap and record.
+//! - `wire_journal` — THE per-device journal of
+//!   spec/reeve/05-health-journal.md §7.1 (B7): one row per wire
+//!   [`JournalRecord`] (status | health | lifecycle | gap), with ONE
+//!   monotonic seq space shared with the live status path — the
+//!   `seq` a live report carries in its `reeve` object and the `seq`
+//!   the same record carries in a backfill batch are THE SAME
+//!   number, so the server's `(deviceId, seq)` dedup works across
+//!   both paths (§7.3). `AUTOINCREMENT` is the persistent monotonic
+//!   counter: seqs survive eviction and are never reused. Lifecycle
+//!   rows are mirrored in by trigger from `journal`; status rows are
+//!   written alongside `status_reports` in one transaction; health
+//!   rows come from the ext-health sampler.
+//! - `journal_ack` — single row: the server-acknowledged watermark
+//!   (§7.3 `JournalAck.ackedSeq`); what permits eviction (§7.1).
 
 use std::path::Path;
 
@@ -105,6 +119,32 @@ pub struct StatusRow {
     pub body_json: String,
 }
 
+/// One wire-journal row (spec/reeve/05-health-journal.md §7.1): the
+/// stored form of a wire [`reeve_types::reeve::health::JournalRecord`].
+/// `ts` is the original timestamp — assigned when journaled, never
+/// rewritten; `kind` is one of `status | health | lifecycle | gap`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WireRecord {
+    pub seq: i64,
+    pub ts: String,
+    pub kind: String,
+    pub payload: Option<String>,
+}
+
+/// Evidence of a forced eviction of unacknowledged records
+/// (spec/reeve/05-health-journal.md §7.1 gap mark).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GapMark {
+    /// First evicted unacknowledged seq.
+    pub from_seq: i64,
+    /// Last evicted seq.
+    pub to_seq: i64,
+    /// How many unacknowledged records were evicted.
+    pub records: u64,
+    /// The seq of the gap record itself.
+    pub gap_seq: i64,
+}
+
 /// Handle on agent.db.
 pub struct AgentDb {
     conn: Connection,
@@ -161,6 +201,9 @@ impl AgentDb {
                 swapped_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS status_reports (
+                -- NOT auto-assigned since B7: the seq is allocated by
+                -- the wire_journal insert in the same transaction, so
+                -- live and backfill paths share one seq space (§7.3).
                 seq           INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts            TEXT NOT NULL,
                 app_id        TEXT NOT NULL,
@@ -172,6 +215,44 @@ impl AgentDb {
                 body_json     TEXT NOT NULL,
                 sent          INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1))
             );
+            CREATE TABLE IF NOT EXISTS wire_journal (
+                -- AUTOINCREMENT = the persistent monotonic per-device
+                -- seq counter (§7.1): never reused, survives eviction
+                -- via sqlite_sequence.
+                seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+                -- Original timestamp (RFC 3339): assigned here, when
+                -- journaled, never rewritten (§7 "original timestamp").
+                ts      TEXT NOT NULL,
+                kind    TEXT NOT NULL
+                        CHECK (kind IN ('status','health','lifecycle','gap')),
+                payload TEXT
+            );
+            CREATE TABLE IF NOT EXISTS journal_ack (
+                id        INTEGER PRIMARY KEY CHECK (id = 1),
+                acked_seq INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO journal_ack (id, acked_seq) VALUES (1, 0);
+            -- Upgrade seam: a pre-B7 agent.db already handed out
+            -- status seqs from status_reports' own counter. Seed the
+            -- shared counter past them so the unified space never
+            -- collides with seqs the server may already hold.
+            INSERT INTO sqlite_sequence (name, seq)
+            SELECT 'wire_journal', (SELECT MAX(seq) FROM status_reports)
+            WHERE NOT EXISTS
+                  (SELECT 1 FROM sqlite_sequence WHERE name = 'wire_journal')
+              AND EXISTS (SELECT 1 FROM status_reports);
+            -- Every agent journal entry IS a lifecycle mark (§7.1:
+            -- start, converge begin/end, provider errors — all land
+            -- in `journal`); the trigger mirrors them into the wire
+            -- journal atomically with the insert that created them.
+            CREATE TRIGGER IF NOT EXISTS journal_to_wire
+            AFTER INSERT ON journal BEGIN
+                INSERT INTO wire_journal (ts, kind, payload)
+                VALUES (NEW.ts, 'lifecycle',
+                        json_object('severity', NEW.severity,
+                                    'event',    NEW.event,
+                                    'detail',   NEW.detail));
+            END;
             "#,
         )?;
         Ok(AgentDb { conn })
@@ -393,21 +474,201 @@ impl AgentDb {
 
     /// Record one status report locally FIRST (store-and-forward,
     /// spec/reeve/05-health-journal.md §7.3: "journaling MUST NOT
-    /// depend on connectivity"). Returns the row's monotonic `seq` —
-    /// what the reeve status extension carries. Full backfill
-    /// machinery is B7; this table + the sent flag is its seed.
+    /// depend on connectivity"). The seq is allocated by the
+    /// `wire_journal` append and shared with the live-send queue row
+    /// — one transaction, one seq, two paths (§7.3: the server
+    /// detects records it already holds by `(deviceId, seq)`, which
+    /// only works if live and backfill agree on the seq). Returns
+    /// that monotonic `seq`.
     pub fn record_status(
         &self,
         app_id: &str,
         deployment_id: &str,
         body_json: &str,
     ) -> Result<i64, StateError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO wire_journal (ts, kind, payload)
+             VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'status', ?1)",
+            params![body_json],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO status_reports (seq, ts, app_id, deployment_id, body_json, sent)
+             SELECT seq, ts, ?2, ?3, payload, 0 FROM wire_journal WHERE seq = ?1",
+            params![seq, app_id, deployment_id],
+        )?;
+        tx.commit()?;
+        Ok(seq)
+    }
+
+    /// Append one health sample to the wire journal (REV-004 §7.2;
+    /// written by the ext-health sampler). Local-first, always —
+    /// transmission is the backfill sweep's job (§7.1: "journaling
+    /// MUST NOT depend on connectivity"). Returns the record's seq.
+    pub fn record_health(&self, sample_json: &str) -> Result<i64, StateError> {
         self.conn.execute(
-            "INSERT INTO status_reports (ts, app_id, deployment_id, body_json, sent)
-             VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, 0)",
-            params![app_id, deployment_id, body_json],
+            "INSERT INTO wire_journal (ts, kind, payload)
+             VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'health', ?1)",
+            params![sample_json],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The server-acknowledged watermark (§7.3): every wire record
+    /// with `seq <= watermark` is contiguously ingested upstream and
+    /// therefore evictable (§7.1). 0 before the first ack.
+    pub fn journal_watermark(&self) -> Result<i64, StateError> {
+        Ok(self
+            .conn
+            .query_row("SELECT acked_seq FROM journal_ack WHERE id = 1", [], |r| r.get(0))?)
+    }
+
+    /// Persist a new ack watermark. Callers advance it monotonically
+    /// (`max(old, ack)`); the raw set exists so tests can simulate a
+    /// crash that lost the watermark write — resending below it is
+    /// harmless either way (§7.3 idempotency).
+    pub fn set_journal_watermark(&self, acked_seq: i64) -> Result<(), StateError> {
+        self.conn.execute(
+            "UPDATE journal_ack SET acked_seq = ?1 WHERE id = 1",
+            params![acked_seq],
+        )?;
+        Ok(())
+    }
+
+    /// Unacknowledged wire records, oldest first (§7.3: "batches
+    /// ordered by sequence number"), at most `limit`.
+    pub fn unacked_wire_records(&self, limit: u32) -> Result<Vec<WireRecord>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, ts, kind, payload FROM wire_journal
+             WHERE seq > (SELECT acked_seq FROM journal_ack WHERE id = 1)
+             ORDER BY seq LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(WireRecord {
+                    seq: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    payload: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every wire record, in seq order (tests / local inspection).
+    pub fn wire_records(&self) -> Result<Vec<WireRecord>, StateError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, ts, kind, payload FROM wire_journal ORDER BY seq")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(WireRecord {
+                    seq: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    payload: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Bounded retention (spec/reeve/05-health-journal.md §7.1):
+    /// - **age**: acknowledged records older than `retention_days`
+    ///   are evicted silently (the server holds them);
+    /// - **size**: if the journal still exceeds `max_bytes`, evict
+    ///   oldest-first — acknowledged records freely, and
+    ///   unacknowledged records ONLY under this size force, in which
+    ///   case ONE gap mark is appended so the server can distinguish
+    ///   "evicted" from "never happened".
+    ///
+    /// One transaction (Law 3). Status-queue rows whose journal
+    /// identity was evicted are dropped with it (their seq no longer
+    /// exists to report under). Returns the gap mark if one was
+    /// journaled.
+    pub fn evict_journal(
+        &self,
+        retention_days: u32,
+        max_bytes: u64,
+    ) -> Result<Option<GapMark>, StateError> {
+        // Approximate fixed per-row cost (seq + ts + kind + b-tree)
+        // on top of the payload bytes.
+        const ROW_OVERHEAD: i64 = 64;
+        let tx = self.conn.unchecked_transaction()?;
+        let watermark: i64 =
+            tx.query_row("SELECT acked_seq FROM journal_ack WHERE id = 1", [], |r| r.get(0))?;
+        // Age retention — acked only (§7.1: unacknowledged records
+        // are protected from everything but the size bound).
+        tx.execute(
+            "DELETE FROM wire_journal
+             WHERE seq <= ?1
+               AND ts <= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?2)",
+            params![watermark, format!("-{retention_days} days")],
+        )?;
+        // Size bound — walk oldest-first until under it.
+        let total: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(COALESCE(length(payload), 0) + ?1), 0) FROM wire_journal",
+            params![ROW_OVERHEAD],
+            |r| r.get(0),
+        )?;
+        let max = i64::try_from(max_bytes).unwrap_or(i64::MAX);
+        let mut gap = None;
+        if total > max {
+            let mut excess = total - max;
+            let mut cutoff: Option<i64> = None;
+            let mut first_forced: Option<i64> = None;
+            let mut forced: u64 = 0;
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT seq, COALESCE(length(payload), 0) + ?1
+                     FROM wire_journal ORDER BY seq",
+                )?;
+                let mut rows = stmt.query(params![ROW_OVERHEAD])?;
+                while excess > 0 {
+                    let Some(row) = rows.next()? else { break };
+                    let seq: i64 = row.get(0)?;
+                    excess -= row.get::<_, i64>(1)?;
+                    cutoff = Some(seq);
+                    if seq > watermark {
+                        forced += 1;
+                        first_forced.get_or_insert(seq);
+                    }
+                }
+            }
+            if let Some(cutoff) = cutoff {
+                tx.execute("DELETE FROM wire_journal WHERE seq <= ?1", params![cutoff])?;
+                if let Some(from_seq) = first_forced {
+                    // §7.1 gap mark: unacknowledged records were
+                    // forced out; the record of that fact takes the
+                    // next seq like any other journal append.
+                    tx.execute(
+                        "INSERT INTO wire_journal (ts, kind, payload)
+                         VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'gap',
+                                 json_object('evictedFromSeq', ?1,
+                                             'evictedToSeq',   ?2,
+                                             'records',        ?3))",
+                        params![from_seq, cutoff, forced as i64],
+                    )?;
+                    gap = Some(GapMark {
+                        from_seq,
+                        to_seq: cutoff,
+                        records: forced,
+                        gap_seq: tx.last_insert_rowid(),
+                    });
+                }
+            }
+        }
+        // Mirror: a status-queue row whose wire record is gone has no
+        // journal identity left to report under.
+        tx.execute(
+            "DELETE FROM status_reports
+             WHERE seq NOT IN (SELECT seq FROM wire_journal)",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(gap)
     }
 
     /// Unsent status reports in sequence order (§7.3: batches ordered
@@ -625,6 +886,144 @@ mod tests {
         assert_eq!(unsent[0].seq, s2);
         // marking twice is harmless (crash-resend idempotency)
         db.mark_status_sent(s1).unwrap();
+    }
+
+    /// §7.1/§7.3: one monotonic seq space across ALL record kinds —
+    /// the live status path and the backfill path carry the SAME seq
+    /// for the same record, and lifecycle journal entries are
+    /// mirrored in by trigger.
+    #[test]
+    fn wire_journal_unifies_seq_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        db.journal(Severity::Info, "agent-start", "v0.1.0").unwrap();
+        let status_seq = db.record_status("web", "dep-1", "{\"a\":1}").unwrap();
+        let health_seq = db.record_health("{\"load\":[0.5]}").unwrap();
+
+        let records = db.wire_records().unwrap();
+        assert_eq!(
+            records.iter().map(|r| (r.seq, r.kind.as_str())).collect::<Vec<_>>(),
+            vec![(1, "lifecycle"), (2, "status"), (3, "health")],
+            "one contiguous seq space across kinds"
+        );
+        assert_eq!(status_seq, 2);
+        assert_eq!(health_seq, 3);
+        // The live-send queue row shares the wire seq AND timestamp.
+        let unsent = db.unsent_statuses().unwrap();
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].seq, status_seq);
+        assert_eq!(unsent[0].ts, records[1].ts);
+        assert_eq!(unsent[0].body_json, "{\"a\":1}");
+        // Trigger mirrored the journal entry as a lifecycle payload.
+        let lifecycle: serde_json::Value =
+            serde_json::from_str(records[0].payload.as_deref().unwrap()).unwrap();
+        assert_eq!(lifecycle["event"], "agent-start");
+        assert_eq!(lifecycle["severity"], "info");
+        assert_eq!(lifecycle["detail"], "v0.1.0");
+    }
+
+    /// The ack watermark (§7.3) gates what backfill re-reads, and it
+    /// survives restart (Law 3).
+    #[test]
+    fn watermark_gates_unacked_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        {
+            let db = AgentDb::open(&path).unwrap();
+            assert_eq!(db.journal_watermark().unwrap(), 0);
+            for i in 0..3 {
+                db.record_health(&format!("{{\"i\":{i}}}")).unwrap();
+            }
+            assert_eq!(db.unacked_wire_records(10).unwrap().len(), 3);
+            db.set_journal_watermark(2).unwrap();
+            let unacked = db.unacked_wire_records(10).unwrap();
+            assert_eq!(unacked.len(), 1);
+            assert_eq!(unacked[0].seq, 3);
+            // limit respected (batching)
+            db.set_journal_watermark(0).unwrap();
+            assert_eq!(db.unacked_wire_records(2).unwrap().len(), 2);
+            db.set_journal_watermark(2).unwrap();
+        } // no shutdown ceremony
+        let db = AgentDb::open(&path).unwrap();
+        assert_eq!(db.journal_watermark().unwrap(), 2, "watermark survives restart");
+    }
+
+    /// §7.1 age retention: ACKED records age out silently (no gap —
+    /// the server holds them); unacked records are immune to age.
+    #[test]
+    fn age_eviction_takes_only_acked_and_leaves_no_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        for i in 0..4 {
+            db.record_health(&format!("{{\"i\":{i}}}")).unwrap();
+        }
+        db.set_journal_watermark(2).unwrap();
+        // retention_days = 0 => everything already-written is "old".
+        let gap = db.evict_journal(0, u64::MAX).unwrap();
+        assert!(gap.is_none(), "acked age-out journals no gap");
+        let seqs: Vec<i64> = db.wire_records().unwrap().iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![3, 4], "unacked records immune to age");
+        // Seq counter is NOT reset by eviction: next record continues.
+        assert_eq!(db.record_health("{}").unwrap(), 5);
+    }
+
+    /// §7.1 size force: evicting unacknowledged records appends ONE
+    /// gap mark recording the evicted range, and the mirrored
+    /// status-queue row goes with its journal identity.
+    #[test]
+    fn forced_size_eviction_emits_gap_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        let filler = format!("{{\"pad\":\"{}\"}}", "x".repeat(256));
+        db.record_status("web", "dep-1", &filler).unwrap(); // seq 1
+        for _ in 0..3 {
+            db.record_health(&filler).unwrap(); // seq 2..4
+        }
+        // Nothing acked; bound small enough to force out seqs 1-2.
+        let gap = db.evict_journal(30, 900).unwrap().expect("gap mark");
+        assert_eq!(gap.from_seq, 1);
+        assert_eq!(gap.to_seq, 2);
+        assert_eq!(gap.records, 2);
+        let records = db.wire_records().unwrap();
+        assert_eq!(
+            records.iter().map(|r| (r.seq, r.kind.as_str())).collect::<Vec<_>>(),
+            vec![(3, "health"), (4, "health"), (5, "gap")]
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(records[2].payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["evictedFromSeq"], 1);
+        assert_eq!(payload["evictedToSeq"], 2);
+        assert_eq!(payload["records"], 2);
+        // The evicted status's live-queue row is gone too.
+        assert!(db.unsent_statuses().unwrap().is_empty());
+        // Within bounds now: idempotent re-run evicts nothing more.
+        assert!(db.evict_journal(30, 900).unwrap().is_none());
+        assert_eq!(db.wire_records().unwrap().len(), 3);
+    }
+
+    /// Upgrade seam: a pre-B7 database whose status_reports already
+    /// used seqs must not hand the same seqs out again from the
+    /// unified counter (the server may already hold them).
+    #[test]
+    fn wire_counter_seeds_past_legacy_status_seqs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        {
+            let db = AgentDb::open(&path).unwrap();
+            // Simulate legacy rows: direct insert bypassing the
+            // unified allocator, as the pre-B7 code did.
+            db.conn
+                .execute_batch(
+                    "DELETE FROM wire_journal;
+                     DELETE FROM sqlite_sequence WHERE name = 'wire_journal';
+                     INSERT INTO status_reports (seq, ts, app_id, deployment_id, body_json, sent)
+                     VALUES (7, '2026-01-01T00:00:00Z', 'web', 'dep-1', '{}', 1);",
+                )
+                .unwrap();
+        }
+        let db = AgentDb::open(&path).unwrap(); // re-open runs the seed
+        let seq = db.record_health("{}").unwrap();
+        assert_eq!(seq, 8, "unified counter starts past legacy status seqs");
     }
 
     #[test]

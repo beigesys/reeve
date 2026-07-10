@@ -20,6 +20,19 @@ pub const DEFAULT_DATA_DIR: &str = "/var/lib/reeve-agent";
 /// (spec/reeve/02-channel.md: without the channel, latency = poll
 /// interval) without hammering constrained WANs (Law 5).
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
+/// Default health sample interval in seconds
+/// (spec/reeve/05-health-journal.md §7.2 RECOMMENDED default 60 s).
+pub const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 60;
+/// Default journal retention window in days
+/// (spec/reeve/05-health-journal.md §7.1 RECOMMENDED default:
+/// 30 days or 512 MiB, whichever first).
+pub const DEFAULT_JOURNAL_RETENTION_DAYS: u32 = 30;
+/// Default journal size bound in bytes (§7.1: 512 MiB).
+pub const DEFAULT_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
+/// Default A/B binary install dir (B8, spec/reeve/08-packaging.md
+/// §10.5): versioned binaries + `current`/`previous` symlinks,
+/// written by `reeve-agent install` and the self-updater.
+pub const DEFAULT_INSTALL_DIR: &str = "/usr/local/lib/reeve-agent";
 
 /// Errors loading agent configuration.
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +80,25 @@ pub struct AgentConfig {
     /// (docs/decisions/agent.md D5).
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+    /// Health sample interval, seconds (REV-004,
+    /// spec/reeve/05-health-journal.md §7.2). Consumed by the
+    /// ext-health sampler; inert without that feature.
+    #[serde(default = "default_health_interval")]
+    pub health_interval_secs: u64,
+    /// Journal retention window, days (§7.1). Age-based eviction
+    /// applies to ACKNOWLEDGED records only.
+    #[serde(default = "default_journal_retention_days")]
+    pub journal_retention_days: u32,
+    /// Journal size bound, bytes (§7.1). Crossing it forces
+    /// oldest-first eviction — of unacknowledged records too, in
+    /// which case a gap mark is journaled.
+    #[serde(default = "default_journal_max_bytes")]
+    pub journal_max_bytes: u64,
+    /// A/B binary dir for self-update (B8,
+    /// spec/reeve/08-packaging.md §10.5). Matches where
+    /// `reeve-agent install` staged the binary.
+    #[serde(default = "default_install_dir")]
+    pub install_dir: PathBuf,
 }
 
 fn default_poll_interval() -> u64 {
@@ -75,6 +107,22 @@ fn default_poll_interval() -> u64 {
 
 fn default_data_dir() -> PathBuf {
     PathBuf::from(DEFAULT_DATA_DIR)
+}
+
+fn default_health_interval() -> u64 {
+    DEFAULT_HEALTH_INTERVAL_SECS
+}
+
+fn default_journal_retention_days() -> u32 {
+    DEFAULT_JOURNAL_RETENTION_DAYS
+}
+
+fn default_journal_max_bytes() -> u64 {
+    DEFAULT_JOURNAL_MAX_BYTES
+}
+
+fn default_install_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_INSTALL_DIR)
 }
 
 impl AgentConfig {
@@ -131,6 +179,11 @@ data_dir = "/tmp/reeve-test"
         assert_eq!(cfg.poll_interval_secs, 5);
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/reeve-test"));
         assert_eq!(cfg.db_path(), PathBuf::from("/tmp/reeve-test/agent.db"));
+        // Health knobs default when absent (REV-004 spec defaults).
+        assert_eq!(cfg.health_interval_secs, DEFAULT_HEALTH_INTERVAL_SECS);
+        assert_eq!(cfg.journal_retention_days, DEFAULT_JOURNAL_RETENTION_DAYS);
+        assert_eq!(cfg.journal_max_bytes, DEFAULT_JOURNAL_MAX_BYTES);
+        assert_eq!(cfg.install_dir, PathBuf::from(DEFAULT_INSTALL_DIR));
     }
 
     #[test]

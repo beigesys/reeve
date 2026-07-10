@@ -58,6 +58,18 @@ pub trait Provider {
 
     /// Observe current workload status without changing anything.
     fn status(&self, app_dir: &Path) -> Result<AppStatus, ProviderError>;
+
+    /// Per-workload container restart counts for health sampling
+    /// (spec/reeve/05-health-journal.md §7.2: "per-workload container
+    /// restart counts (from the active Provider)"). Sample fields are
+    /// extensible/optional (§7.2), so a provider that cannot observe
+    /// restarts returns `None` and the field is simply absent — the
+    /// default. `docker compose ps` does not expose restart counts;
+    /// a real compose implementation needs per-container `docker
+    /// inspect` and can land without touching the trait.
+    fn restart_counts(&self) -> Option<std::collections::BTreeMap<String, u64>> {
+        None
+    }
 }
 
 /// Compose file name inside an app dir (docs/decisions/tree-render.md

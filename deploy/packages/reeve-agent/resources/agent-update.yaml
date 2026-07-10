@@ -1,0 +1,16 @@
+# Agent self-update descriptor (spec/reeve/08-packaging.md §10.5;
+# parsed by crates/reeve-agent/src/update.rs `AgentUpdateSpec`).
+# Rendered into the device app dir as `agent-update.yaml` — its
+# presence routes the app to the A/B updater instead of the compose
+# provider.
+#
+# The url/digest name the §10.4 agent OCI artifact blob ON THE SERVER
+# THE DEVICE ENROLLED WITH (one origin for trust, transport and
+# enrollment); per-architecture selection happens at render time from
+# device context. The values below are placeholders — a real render
+# substitutes the released binary's digest.
+version: "0.1.0"
+binary:
+  url: /v2/reeve/reeve-agent-x86_64/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  sizeBytes: 0

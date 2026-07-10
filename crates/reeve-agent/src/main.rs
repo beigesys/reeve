@@ -7,9 +7,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use reeve_agent::{
-    AgentConfig, AgentDb, BundleSource, BundleStore, CommandComposeProvider, ManifestSource,
-    PollOutcome, Provider, PullError, StatusSink, converge, poll_once, record_reports,
-    resolve_desired,
+    AgentConfig, AgentDb, AgentUpdater, BinDir, BinaryFetcher, BundleSource, BundleStore,
+    CommandComposeProvider, ExitRestarter, ManifestSource, PollOutcome, Provider, PullError,
+    Severity, StatusSink, converge_full, poll_once, record_reports, resolve_desired,
 };
 use tracing::{error, info, warn};
 
@@ -36,6 +36,12 @@ struct ExtHooks {
     /// after every converge pass (spec/reeve/03-terminal.md §5.2).
     #[cfg(feature = "ext-terminal")]
     terminal: Option<std::sync::Arc<reeve_agent::ext::terminal::TerminalGate>>,
+    /// ext-health (REV-004): background health sampler + journal
+    /// backfill sender (spec/reeve/05-health-journal.md §7). The
+    /// sampler runs even for `dir://` sources — journaling is
+    /// local-first (§7.1); only the backfill sender needs a server.
+    #[cfg(feature = "ext-health")]
+    health: Option<reeve_agent::ext::health::HealthRuntime>,
 }
 
 /// Wait between cycles: the poll interval tick, or — with the
@@ -82,14 +88,35 @@ async fn sync_bundle(store: &BundleStore, db: &mut AgentDb, source: &BundleSourc
 /// the server if reachable. Consumes only local state until the
 /// final send — the first pass after restart works with the server
 /// unreachable (Law 5).
+/// B8 self-update context (spec/reeve/08-packaging.md §10.5): the
+/// A/B updater and the binary prefetcher, carried together through
+/// the loop.
+struct UpdateCtx {
+    updater: AgentUpdater,
+    fetcher: Option<BinaryFetcher>,
+}
+
 async fn converge_and_report(
     db: &mut AgentDb,
     data_dir: &Path,
     store: &BundleStore,
     provider: &dyn Provider,
+    update: &UpdateCtx,
     sink: Option<&StatusSink>,
     hooks: &ExtHooks,
 ) {
+    // B8 self-update prefetch (spec/reeve/08-packaging.md §10.5):
+    // stage any agent-update binary the bundle names BEFORE converge,
+    // so converge itself consumes only local state (Law 5 — same
+    // split as the bundle pull; offline is a journaled no-op).
+    reeve_agent::update::prefetch(
+        db,
+        store,
+        update.updater.bin_dir(),
+        update.fetcher.as_ref(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .await;
     #[cfg_attr(not(feature = "ext-secrets"), allow(unused_mut))]
     let mut desired = resolve_desired(db, store);
     // ext-secrets (REV-009): resolve `${secret:<name>}` references
@@ -101,7 +128,7 @@ async fn converge_and_report(
     reeve_agent::ext::secrets::sync_env(db, data_dir, hooks.secrets.as_ref(), &mut desired).await;
     #[cfg(not(feature = "ext-secrets"))]
     let _ = hooks;
-    let reports = converge(db, data_dir, provider, &desired);
+    let reports = converge_full(db, data_dir, provider, Some(&update.updater), &desired);
     if !reports.is_empty() {
         info!(acted_on = reports.len(), "converge pass acted");
         record_reports(db, &reports);
@@ -121,6 +148,143 @@ async fn converge_and_report(
     if let Some(sink) = sink {
         sink.send_unsent(db).await;
     }
+    // ext-health (REV-004): drain unacknowledged journal records
+    // (health samples, lifecycle marks, statuses, gap marks) to the
+    // reeve journal surface. Running every cycle IS both the
+    // reconnect backfill and the periodic sweep (§7.3); offline it
+    // returns on the first send error and accumulates (Law 5).
+    #[cfg(feature = "ext-health")]
+    if let Some(runtime) = &hooks.health
+        && let Some(sender) = runtime.sender()
+    {
+        reeve_agent::ext::health::backfill(db, sender).await;
+    }
+}
+
+/// `reeve-agent install [--server <URL> --token <JOIN_TOKEN>]
+/// [--root <PATH>]` — the §10.3 self-install (docs/decisions/
+/// agent.md D4: with `--server`/`--token` it enrolls first, so one
+/// command takes a bare box to a running, enrolled agent). `--root`
+/// stages the whole layout under a prefix (testing/harness hook);
+/// root privileges are required either way.
+async fn install_cmd(
+    args: std::iter::Peekable<impl Iterator<Item = String>>,
+) -> anyhow::Result<()> {
+    let usage = "usage: reeve-agent install [--server <URL> --token <JOIN_TOKEN>] [--root <PATH>]";
+    let mut server = None;
+    let mut token = None;
+    let mut root = None;
+    let mut it = args;
+    while let Some(flag) = it.next() {
+        let mut value =
+            |name: &str| it.next().ok_or_else(|| anyhow::anyhow!("{name} requires a value\n{usage}"));
+        match flag.as_str() {
+            "--server" => server = Some(value("--server")?),
+            "--token" => token = Some(value("--token")?),
+            "--root" => root = Some(std::path::PathBuf::from(value("--root")?)),
+            other => anyhow::bail!("unknown argument {other:?}\n{usage}"),
+        }
+    }
+    let layout = root
+        .as_deref()
+        .map(reeve_agent::InstallLayout::under)
+        .unwrap_or_else(reeve_agent::InstallLayout::system);
+
+    // Enroll first when credentials were given (D4): the config this
+    // writes is what step 6 of install() checks before starting the
+    // unit.
+    match (server, token) {
+        (Some(server), Some(join_token)) => {
+            let cfg = reeve_agent::enroll(&reeve_agent::EnrollOpts {
+                server,
+                join_token,
+                config_path: layout.config_path(),
+                data_dir: Some(layout.data_dir()),
+            })
+            .await?;
+            info!(device_id = cfg.device_id.as_deref().unwrap_or(""), "enrolled");
+        }
+        (None, None) => {}
+        _ => anyhow::bail!("--server and --token must be given together\n{usage}"),
+    }
+
+    let opts = reeve_agent::InstallOpts {
+        source_binary: std::env::current_exe()?,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let actions = reeve_agent::install(&reeve_agent::RealSys, &layout, &opts)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    for a in &actions {
+        println!("install: {a}");
+    }
+    Ok(())
+}
+
+/// `reeve-agent uninstall [--purge] [--root <PATH>]` — reverses
+/// install (§10.3). Without `--purge` the device identity
+/// (agent.toml) and state (data dir) survive.
+fn uninstall_cmd(args: std::iter::Peekable<impl Iterator<Item = String>>) -> anyhow::Result<()> {
+    let usage = "usage: reeve-agent uninstall [--purge] [--root <PATH>]";
+    let mut purge = false;
+    let mut root = None;
+    let mut it = args;
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--purge" => purge = true,
+            "--root" => {
+                root = Some(std::path::PathBuf::from(
+                    it.next().ok_or_else(|| anyhow::anyhow!("--root requires a value\n{usage}"))?,
+                ));
+            }
+            other => anyhow::bail!("unknown argument {other:?}\n{usage}"),
+        }
+    }
+    let layout = root
+        .as_deref()
+        .map(reeve_agent::InstallLayout::under)
+        .unwrap_or_else(reeve_agent::InstallLayout::system);
+    let actions = reeve_agent::uninstall(&reeve_agent::RealSys, &layout, purge)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    for a in &actions {
+        println!("uninstall: {a}");
+    }
+    Ok(())
+}
+
+/// `reeve-agent rollback [--install-dir <PATH>]` — flip `current`
+/// back to the retained previous binary and restart the unit
+/// (spec/reeve/08-packaging.md §10.5). Invoked by the OnFailure
+/// companion unit THROUGH the previous binary (see
+/// crate::systemd::rollback_unit); safe to run by hand.
+fn rollback_cmd(args: std::iter::Peekable<impl Iterator<Item = String>>) -> anyhow::Result<()> {
+    let usage = "usage: reeve-agent rollback [--install-dir <PATH>]";
+    let mut install_dir = std::path::PathBuf::from(reeve_agent::config::DEFAULT_INSTALL_DIR);
+    let mut it = args;
+    while let Some(flag) = it.next() {
+        match flag.as_str() {
+            "--install-dir" => {
+                install_dir = std::path::PathBuf::from(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--install-dir requires a value\n{usage}"))?,
+                );
+            }
+            other => anyhow::bail!("unknown argument {other:?}\n{usage}"),
+        }
+    }
+    let bin = BinDir::new(&install_dir);
+    let restored = bin.rollback().map_err(|e| anyhow::anyhow!(e))?;
+    println!("rollback: current -> {restored}");
+    // Best-effort restart: when invoked from the OnFailure unit we
+    // run as root and systemd is there; by hand it may not be.
+    use reeve_agent::UnitRestarter as _;
+    let restarter = reeve_agent::update::SystemctlRestarter {
+        unit: reeve_agent::systemd::AGENT_UNIT.to_string(),
+    };
+    match restarter.restart() {
+        Ok(()) => println!("rollback: restart of {} requested", reeve_agent::systemd::AGENT_UNIT),
+        Err(e) => warn!(error = %e, "rollback: could not restart unit; restart it manually"),
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -144,9 +308,26 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    // B8 self-install / uninstall / A-B rollback
+    // (spec/reeve/08-packaging.md §10.3, §10.5).
+    match args.peek().map(String::as_str) {
+        Some("install") => {
+            args.next();
+            return install_cmd(args).await;
+        }
+        Some("uninstall") => {
+            args.next();
+            return uninstall_cmd(args);
+        }
+        Some("rollback") => {
+            args.next();
+            return rollback_cmd(args);
+        }
+        _ => {}
+    }
     if let Some(other) = args.peek() {
         anyhow::bail!(
-            "unknown subcommand {other:?}\nusage: reeve-agent [enroll --server <URL> --token <JOIN_TOKEN>]"
+            "unknown subcommand {other:?}\nusage: reeve-agent [enroll --server <URL> --token <JOIN_TOKEN> | install [--server <URL> --token <JOIN_TOKEN>] | uninstall [--purge] | rollback]"
         );
     }
 
@@ -158,6 +339,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Startup IS recovery: opening the DB is the whole ceremony.
     let mut db = AgentDb::open(&config.db_path())?;
+
+    // Lifecycle mark (spec/reeve/05-health-journal.md §7.1: the
+    // journal records agent start); mirrored to the wire journal by
+    // trigger.
+    if let Err(e) = db.journal(Severity::Info, "agent-start", env!("CARGO_PKG_VERSION")) {
+        warn!(error = %e, "could not journal agent start");
+    }
 
     // First converge must not block on network (Law 5): say what we
     // already hold before the first poll.
@@ -195,8 +383,22 @@ async fn main() -> anyhow::Result<()> {
     // The compose provider (docs/decisions/agent.md D5) and the
     // status sink (Margo deployment-status path; None for dir://
     // sources and unenrolled agents — reports then accumulate
-    // locally, spec/reeve/05-health-journal.md §7.3).
-    let provider = CommandComposeProvider::new(&config.data_dir);
+    // locally, spec/reeve/05-health-journal.md §7.3). Arc'd so the
+    // ext-health sampler can query restart counts (§7.2) without
+    // borrowing from the loop.
+    let provider = std::sync::Arc::new(CommandComposeProvider::new(&config.data_dir));
+    // B8 self-update (spec/reeve/08-packaging.md §10.5): the A/B
+    // updater over config.install_dir with the exit-to-re-exec
+    // restarter, and the binary prefetcher over the same source the
+    // bundles come from.
+    let update = UpdateCtx {
+        updater: AgentUpdater::new(
+            BinDir::new(&config.install_dir),
+            Box::new(ExitRestarter),
+            env!("CARGO_PKG_VERSION"),
+        ),
+        fetcher: BinaryFetcher::from_config(&config.server, config.device_token.clone()),
+    };
     let sink = StatusSink::from_config(
         &config.server,
         config.device_token.clone(),
@@ -218,6 +420,18 @@ async fn main() -> anyhow::Result<()> {
         if hooks.secrets.is_none() {
             info!("no secrets resolver (dir:// source or not enrolled); apps with secret references defer");
         }
+    }
+    #[cfg(feature = "ext-health")]
+    {
+        // REV-004: sampler task + backfill sender. The sampler
+        // journals locally regardless of connectivity (§7.1) and
+        // feeds the live-status health slot (§7.3); a sampler
+        // failure never touches convergence (Law 5).
+        hooks.health = Some(reeve_agent::ext::health::spawn(
+            &config,
+            provider.clone(),
+            sink.as_ref().map(|s| s.health_slot()),
+        ));
     }
     #[cfg(feature = "ext-channel")]
     {
@@ -252,7 +466,16 @@ async fn main() -> anyhow::Result<()> {
     // First converge BEFORE the first poll: startup IS recovery
     // (Law 3 — any non-terminal phase re-runs) and must work from
     // last known state with the server unreachable (Law 5).
-    converge_and_report(&mut db, &config.data_dir, &store, &provider, sink.as_ref(), &hooks).await;
+    converge_and_report(
+        &mut db,
+        &config.data_dir,
+        &store,
+        provider.as_ref(),
+        &update,
+        sink.as_ref(),
+        &hooks,
+    )
+    .await;
 
     // Capability probe once per startup (spec/reeve/01-framework.md
     // §3.3: probe per enrollment and on version change; a restart
@@ -299,8 +522,16 @@ async fn main() -> anyhow::Result<()> {
                 warn!(received = received.0, "manifest rejected; holding last known state");
             }
         }
-        converge_and_report(&mut db, &config.data_dir, &store, &provider, sink.as_ref(), &hooks)
-            .await;
+        converge_and_report(
+            &mut db,
+            &config.data_dir,
+            &store,
+            provider.as_ref(),
+            &update,
+            sink.as_ref(),
+            &hooks,
+        )
+        .await;
         // Interval tick, or a rate-limited channel nudge (§4.4) —
         // either way the next iteration is a full poll+converge, so
         // the gap between polls never exceeds the interval.

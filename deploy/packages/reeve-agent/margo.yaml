@@ -1,0 +1,42 @@
+# reeve-agent self-update package (spec/reeve/08-packaging.md §10.5):
+# "The repository ships an example Margo-shaped application package
+# (an ApplicationDescription valid per margo-package) for reeve-agent
+# itself — the agent binary it references is the OCI artifact of
+# §10.4 — so agent updates flow through the normal desired-state
+# tree ... No side-band updater exists."
+#
+# Shape pinned by spec/margo/src/specification/applications/
+# application-description.linkml.yaml. Reeve extensions are additive
+# and clearly marked (CLAUDE.md "Spec fidelity"): the component
+# property `reeveAgentUpdate` points at the update descriptor this
+# package vendors under resources/ — the render pipeline places it in
+# the device's app dir as `agent-update.yaml`, which is the marker
+# reeve-agent's converge routes to the A/B self-update apply path
+# instead of the workload provider (crates/reeve-agent/src/update.rs).
+apiVersion: margo.org/v1-alpha1
+kind: ApplicationDescription
+metadata:
+  id: reeve-agent
+  name: reeve-agent
+  description: The reeve per-device agent, updating itself through desired state (A/B binary swap, health-gated rollback).
+  version: 0.1.0
+  catalog:
+    application:
+      descriptionFile: ./resources/description.md
+      site: https://github.com/bherbruck/reeve
+      tags: ["reeve", "agent", "self-update"]
+    organization:
+      - name: reeve
+        site: https://github.com/bherbruck/reeve
+deploymentProfiles:
+  # Profile type `compose` keeps the description valid per the pinned
+  # linkml pattern ^(helm|compose)$; the agent never composes this app
+  # — the rendered agent-update.yaml marker routes it to the A/B
+  # updater before the compose provider is consulted.
+  - type: compose
+    id: reeve-agent-self-update
+    components:
+      - name: reeve-agent
+        properties:
+          # reeve extension (additive): the self-update descriptor.
+          reeveAgentUpdate: ./resources/agent-update.yaml

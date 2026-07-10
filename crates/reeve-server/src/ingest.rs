@@ -21,26 +21,33 @@
 //! Each ingest call is ONE transaction: kill -9 mid-batch leaves either
 //! nothing or a prefix, and the resend converges (Law 3).
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use device_api::status::{StatusIngest, StatusIngestError};
 use reeve_types::margo::status::{
     DEPLOYMENT_STATUS_KIND, DeploymentState, DeploymentStatusManifest,
 };
+use reeve_types::reeve::events::{DeploymentStatusEvent, SseEvent};
 use reeve_types::reeve::health::{JournalAck, JournalBatch, JournalRecordKind};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 
 use crate::db;
+use crate::events::EventHub;
 
 /// `StatusIngest` over the server DB. Constructed in router assembly;
-/// the routes live in device-api (Law 2 seam).
+/// the routes live in device-api (Law 2 seam). Emits
+/// `deployment-status` events (spec/reeve/04-status-stream.md §6.3:
+/// "ingested manifest changes a deployment's overall state") on the
+/// C8 event hub — droppable hints, never load-bearing.
 pub struct SqliteStatusIngest {
     db: Arc<Mutex<Connection>>,
+    events: EventHub,
 }
 
 impl SqliteStatusIngest {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<Mutex<Connection>>, events: EventHub) -> Self {
+        Self { db, events }
     }
 }
 
@@ -65,6 +72,36 @@ fn state_str(state: DeploymentState) -> &'static str {
         DeploymentState::Removed => "removed",
         DeploymentState::Failed => "failed",
     }
+}
+
+/// Inverse of [`state_str`] — reading `deployment_status_current`
+/// back into the Margo enum for event payloads (§6.3: `state` is the
+/// Margo enum). `None` for a value outside the pinned set.
+fn state_from_str(s: &str) -> Option<DeploymentState> {
+    Some(match s {
+        "pending" => DeploymentState::Pending,
+        "installing" => DeploymentState::Installing,
+        "installed" => DeploymentState::Installed,
+        "removing" => DeploymentState::Removing,
+        "removed" => DeploymentState::Removed,
+        "failed" => DeploymentState::Failed,
+        _ => return None,
+    })
+}
+
+/// Stored overall state of one (device, deployment), if any.
+fn stored_state(
+    conn: &Connection,
+    device_id: &str,
+    deployment_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT state FROM deployment_status_current
+         WHERE device_id = ?1 AND deployment_id = ?2",
+        params![device_id, deployment_id],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 /// Storage name of a journal record kind (mirrors the wire kebab-case
@@ -213,6 +250,7 @@ impl StatusIngest for SqliteStatusIngest {
             None => None, // vanilla Margo report (§3.2): no journal identity
         };
 
+        let before = stored_state(&tx, device_id, deployment_id).map_err(internal)?;
         upsert_current(
             &tx,
             device_id,
@@ -227,7 +265,24 @@ impl StatusIngest for SqliteStatusIngest {
         )
         .map_err(internal)?;
 
-        tx.commit().map_err(internal)
+        tx.commit().map_err(internal)?;
+
+        // §6.3 deployment-status: emitted only when the OVERALL state
+        // actually changed (the max-seq rule may have kept the old
+        // one). Read back what the transaction left current.
+        let after = stored_state(&conn, device_id, deployment_id).map_err(internal)?;
+        drop(conn);
+        if before != after
+            && let Some(state) = after.as_deref().and_then(state_from_str)
+        {
+            self.events.emit(SseEvent::DeploymentStatus(DeploymentStatusEvent {
+                ts: EventHub::now_ts(),
+                device_id: device_id.to_string(),
+                deployment_id: deployment_id.to_string(),
+                state,
+            }));
+        }
+        Ok(())
     }
 
     fn ingest_journal(
@@ -240,6 +295,10 @@ impl StatusIngest for SqliteStatusIngest {
         let tx = conn.transaction().map_err(internal)?;
 
         touch_last_seen(&tx, device_id, now).map_err(internal)?;
+
+        // deployment_id -> state before this batch (first touch wins),
+        // for §6.3 deployment-status change detection after commit.
+        let mut before: BTreeMap<String, Option<String>> = BTreeMap::new();
 
         for record in &batch.records {
             let seq = storage_seq(record.seq)?;
@@ -266,6 +325,11 @@ impl StatusIngest for SqliteStatusIngest {
                 && let Ok(m) = serde_json::from_str::<DeploymentStatusManifest>(payload_str)
                 && m.kind == DEPLOYMENT_STATUS_KIND
             {
+                if !before.contains_key(&m.deployment_id) {
+                    let prior =
+                        stored_state(&tx, device_id, &m.deployment_id).map_err(internal)?;
+                    before.insert(m.deployment_id.clone(), prior);
+                }
                 upsert_current(
                     &tx,
                     device_id,
@@ -284,6 +348,27 @@ impl StatusIngest for SqliteStatusIngest {
 
         tx.commit().map_err(internal)?;
         let acked = acked_seq(&conn, device_id).map_err(internal)?;
+
+        // §6.3 deployment-status per deployment the batch touched,
+        // only where the overall state actually moved.
+        let mut changed: Vec<(String, DeploymentState)> = Vec::new();
+        for (deployment_id, prior) in &before {
+            let after = stored_state(&conn, device_id, deployment_id).map_err(internal)?;
+            if after != *prior
+                && let Some(state) = after.as_deref().and_then(state_from_str)
+            {
+                changed.push((deployment_id.clone(), state));
+            }
+        }
+        drop(conn);
+        for (deployment_id, state) in changed {
+            self.events.emit(SseEvent::DeploymentStatus(DeploymentStatusEvent {
+                ts: EventHub::now_ts(),
+                device_id: device_id.to_string(),
+                deployment_id,
+                state,
+            }));
+        }
         Ok(JournalAck { acked_seq: acked })
     }
 }

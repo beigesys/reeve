@@ -106,6 +106,10 @@ pub async fn enroll(opts: &EnrollOpts) -> Result<AgentConfig, EnrollCmdError> {
             .data_dir
             .clone()
             .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR)),
+        health_interval_secs: crate::config::DEFAULT_HEALTH_INTERVAL_SECS,
+        journal_retention_days: crate::config::DEFAULT_JOURNAL_RETENTION_DAYS,
+        journal_max_bytes: crate::config::DEFAULT_JOURNAL_MAX_BYTES,
+        install_dir: PathBuf::from(crate::config::DEFAULT_INSTALL_DIR),
     };
     write_config(&cfg, &opts.config_path).map_err(|source| EnrollCmdError::WriteConfig {
         path: opts.config_path.to_path_buf(),
@@ -370,6 +374,10 @@ mod tests {
             device_id: Some("dev-1".into()),
             poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
+            health_interval_secs: crate::config::DEFAULT_HEALTH_INTERVAL_SECS,
+            journal_retention_days: crate::config::DEFAULT_JOURNAL_RETENTION_DAYS,
+            journal_max_bytes: crate::config::DEFAULT_JOURNAL_MAX_BYTES,
+            install_dir: PathBuf::from(crate::config::DEFAULT_INSTALL_DIR),
         };
         write_config(&mk("a"), &path).unwrap();
         write_config(&mk("b"), &path).unwrap();

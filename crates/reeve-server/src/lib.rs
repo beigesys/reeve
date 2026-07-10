@@ -10,9 +10,11 @@
 //! (C2..C12) compose the same router and state.
 
 pub mod auth;
+pub mod channels;
 pub mod config;
 pub mod db;
 pub mod delivery;
+pub mod events;
 pub mod device_tokens;
 pub mod durability;
 pub mod enroll;
@@ -78,7 +80,31 @@ pub fn bootstrap(cfg: Config) -> anyhow::Result<AppState> {
         // stream is refused structurally regardless (federation §8.2).
         // C10 swaps in Ownership::Gateway when `upstream` is configured.
         ownership: Arc::new(ownership::Ownership::Root),
+        // C8: fresh per boot — event ids restart (clients get `reset`,
+        // spec/reeve/04-status-stream.md §6.2) and no channel survives
+        // its process (Law 3: nothing durable to recover here).
+        events: events::EventHub::new(),
+        channels: channels::Channels::new(),
     };
+
+    // Terminal audit finalization (spec/reeve/03-terminal.md §5.4,
+    // Law 3): a server crash mid-session left rows with NULL ended_at
+    // — the PTYs died with their sub-channels; startup completes the
+    // accounting as close_reason = server-restart. Unconditional
+    // (the V7 table exists regardless of ext-terminal, and a core
+    // binary must still finalize a full binary's dangling rows).
+    {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        let dangling = conn.execute(
+            "UPDATE terminal_sessions
+             SET ended_at = ?1, close_reason = 'server-restart'
+             WHERE ended_at IS NULL",
+            rusqlite::params![db::now_secs()],
+        )?;
+        if dangling > 0 {
+            warn!(dangling, "finalized terminal sessions dangling from a crash (§5.4)");
+        }
+    }
 
     // Render-on-startup reconcile (Law 3: startup IS recovery): a
     // revision committed but un-rendered at kill time gets rendered now;
@@ -119,6 +145,25 @@ pub async fn run_with_options(cfg: Config, opts: RunOptions) -> anyhow::Result<(
     // -> resume streaming; scheduled loops for snapshot/ship/verify.
     durability::startup(&state.durability, state.migrated_at_boot).await;
     durability::spawn_tasks(state.durability.clone(), &state.cfg.durability);
+
+    // C8 durability sampling (spec/reeve/04-status-stream.md §6.3):
+    // poll durability.status() and emit `durability-lag` /
+    // `verify-restore` events on transitions (ext/sse.rs).
+    #[cfg(feature = "ext-sse")]
+    ext::sse::spawn_durability_sampler(
+        state.durability.clone(),
+        state.events.clone(),
+        std::time::Duration::from_secs(10),
+    );
+
+    // C9 rollout engine (spec/reeve/09-rollouts.md §11.2, Law 3): the
+    // periodic tick's FIRST fire is the startup resume — rollout state
+    // is all in SQLite, so a server killed mid-wave re-reads manifest/
+    // advancement state and continues exactly where it stopped. The
+    // second leg reacts to `failed` status ingests immediately (§11.4
+    // auto-pause "at any time").
+    #[cfg(feature = "ext-rollouts")]
+    ext::rollouts::spawn_engine(state.clone());
 
     let report = auth::bootstrap(&state)?;
     for notice in &report.notices {

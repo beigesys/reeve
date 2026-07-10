@@ -349,10 +349,28 @@ fn retain_applied(data_dir: &Path, name: &str, staged: &Path) -> std::io::Result
 /// Runs identically at startup and after every poll; startup
 /// recovery falls out of the diff (any non-terminal phase fails the
 /// `phase == "applied"` check and re-runs, D5).
+///
+/// Convenience wrapper over [`converge_full`] with no agent-update
+/// path — agent-update apps then fail with a clear message.
 pub fn converge(
     db: &mut AgentDb,
     data_dir: &Path,
     provider: &dyn Provider,
+    desired: &Desired,
+) -> Vec<AppReport> {
+    converge_full(db, data_dir, provider, None, desired)
+}
+
+/// [`converge`] plus the agent self-update apply path (B8,
+/// spec/reeve/08-packaging.md §10.5): apps carrying
+/// [`crate::update::AGENT_UPDATE_FILE`] are routed to `updater`
+/// instead of the workload provider, through the same D5 phase
+/// machine.
+pub fn converge_full(
+    db: &mut AgentDb,
+    data_dir: &Path,
+    provider: &dyn Provider,
+    updater: Option<&crate::update::AgentUpdater>,
     desired: &Desired,
 ) -> Vec<AppReport> {
     let Desired::Known { apps } = desired else {
@@ -389,7 +407,7 @@ pub fn converge(
         {
             continue; // unchanged => silent skip (D5)
         }
-        reports.push(apply_app(db, data_dir, provider, app, &hash, sv.as_deref()));
+        reports.push(apply_app(db, data_dir, provider, updater, app, &hash, sv.as_deref()));
     }
 
     // Absent dir = remove (D2). `removed` is terminal: those rows
@@ -411,6 +429,7 @@ fn apply_app(
     db: &mut AgentDb,
     data_dir: &Path,
     provider: &dyn Provider,
+    updater: Option<&crate::update::AgentUpdater>,
     app: &DesiredApp,
     hash: &str,
     secrets_version: Option<&str>,
@@ -438,6 +457,63 @@ fn apply_app(
     // Intent BEFORE action (D5).
     if let Err(e) = db.record_phase(&app.name, hash, secrets_version, "planned", &format!("hash {hash}")) {
         fail(&mut report, format!("cannot record planned phase: {e}"));
+        return report;
+    }
+    // Agent self-update apps (spec/reeve/08-packaging.md §10.5,
+    // B8): recognized by the AGENT_UPDATE_FILE marker, applied by
+    // the A/B updater instead of the workload provider — no compose
+    // staging, no retained copy (there is nothing to `down` later;
+    // removal takes the no-copy path). Same phase machine: `applied`
+    // is recorded ONLY once the running agent IS the target version,
+    // so a crash/restart anywhere re-runs this branch (Law 3).
+    if let Some(parsed) = crate::update::update_spec(&app.dir) {
+        let spec = match parsed {
+            Ok(spec) => spec,
+            Err(e) => {
+                let msg = format!("unusable agent-update descriptor: {e}");
+                let _ = db.record_phase(&app.name, hash, secrets_version, "failed", &msg);
+                fail(&mut report, msg);
+                return report;
+            }
+        };
+        let Some(updater) = updater else {
+            let msg = "agent-update app present but no updater configured".to_string();
+            let _ = db.record_phase(&app.name, hash, secrets_version, "failed", &msg);
+            fail(&mut report, msg);
+            return report;
+        };
+        if let Err(e) = db.record_phase(&app.name, hash, secrets_version, "applying", "agent-update") {
+            fail(&mut report, format!("cannot record applying phase: {e}"));
+            return report;
+        }
+        // NOTE: with the production ExitRestarter this call does not
+        // return once the swap lands — the exit is the restart
+        // request; the phase stays `applying` (non-terminal) and the
+        // NEW binary's first converge pass finishes it (Law 3).
+        let outcome = updater.apply(&spec);
+        if let Some(detail) = &outcome.detail {
+            let _ = db.journal(Severity::Info, "agent-update-progress", &format!("{}: {detail}", app.name));
+        }
+        match outcome.state {
+            DeploymentState::Installed => {
+                match db.record_phase(&app.name, hash, secrets_version, "applied", &format!("agent version {}", spec.version)) {
+                    Ok(()) => {
+                        info!(app = %app.name, version = %spec.version, "agent update converged");
+                        report.state = DeploymentState::Installed;
+                    }
+                    Err(e) => fail(&mut report, format!("cannot record applied phase: {e}")),
+                }
+            }
+            DeploymentState::Failed => {
+                let msg = outcome.error.unwrap_or_else(|| "agent update failed".into());
+                warn!(app = %app.name, error = %msg, "agent update failed");
+                let _ = db.record_phase(&app.name, hash, secrets_version, "failed", &msg);
+                fail(&mut report, msg);
+            }
+            // In flight (binary not fetched / restart pending):
+            // phase stays `applying`, re-checked next pass.
+            state => report.state = state,
+        }
         return report;
     }
     let staged = data_dir.join(APPS_DIR).join(&app.name);
@@ -987,6 +1063,89 @@ services:
             "SECRET=x\n",
             "agent-local env content survives restage"
         );
+    }
+
+    /// B8 (spec/reeve/08-packaging.md §10.5): an app carrying
+    /// agent-update.yaml routes to the A/B updater through the D5
+    /// phase machine — the compose provider is never consulted, the
+    /// terminal `applied` phase is recorded only once the running
+    /// agent IS the target version, and a converged pass is silent.
+    #[test]
+    fn agent_update_app_routes_to_updater_not_provider() {
+        use crate::update::{AgentUpdater, BinDir, UnitRestarter};
+
+        struct NoopRestarter;
+        impl UnitRestarter for NoopRestarter {
+            fn restart(&self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut h = harness();
+        let digest = {
+            use sha2::Digest as _;
+            format!("sha256:{:x}", Sha256::digest(b"new-agent"))
+        };
+        let update_yaml = format!(
+            "version: \"0.9.9\"\nbinary:\n  url: /v2/reeve/agent/blobs/{digest}\n  digest: {digest}\n"
+        );
+        let files: Vec<(&str, &str)> = vec![
+            (crate::update::AGENT_UPDATE_FILE, &update_yaml),
+            (DEPLOYMENT_FILE, DEPLOYMENT_YAML),
+        ];
+        swap_bundle(&h, "aaa", &[("reeve-agent", &files)]);
+        let provider = FakeProvider::default();
+        let bin = BinDir::new(&h.data_dir.join("lib"));
+        bin.stage("0.1.0", b"old-agent", &{
+            use sha2::Digest as _;
+            format!("sha256:{:x}", Sha256::digest(b"old-agent"))
+        })
+        .unwrap();
+        bin.swap_to("0.1.0").unwrap();
+        bin.stage("0.9.9", b"new-agent", &digest).unwrap();
+
+        // Pass 1: running 0.1.0 -> swap + restart requested; phase
+        // stays `applying` (non-terminal, Law 3), provider untouched.
+        let updater = AgentUpdater::new(bin.clone(), Box::new(NoopRestarter), "0.1.0");
+        let desired = resolve_desired(&h.db, &h.store);
+        let reports = converge_full(&mut h.db, &h.data_dir.clone(), &provider, Some(&updater), &desired);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].state, DeploymentState::Installing);
+        assert_eq!(reports[0].deployment_name, "web-deploy", "status contract still read");
+        assert!(provider.calls().is_empty(), "compose provider must never see the update app");
+        assert_eq!(phases(&h.db)["reeve-agent"], "applying");
+        assert_eq!(bin.current_target().as_deref(), Some("reeve-agent-0.9.9"));
+
+        // Pass 2 ("after re-exec"): running the target => applied.
+        let updater = AgentUpdater::new(bin.clone(), Box::new(NoopRestarter), "0.9.9");
+        let desired = resolve_desired(&h.db, &h.store);
+        let reports = converge_full(&mut h.db, &h.data_dir.clone(), &provider, Some(&updater), &desired);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].state, DeploymentState::Installed);
+        assert_eq!(phases(&h.db)["reeve-agent"], "applied");
+
+        // Pass 3: converged => silent (D5).
+        let desired = resolve_desired(&h.db, &h.store);
+        assert!(converge_full(&mut h.db, &h.data_dir.clone(), &provider, Some(&updater), &desired).is_empty());
+        assert!(provider.calls().is_empty());
+    }
+
+    /// An unusable update descriptor FAILS the app — it must never
+    /// fall through to the compose provider.
+    #[test]
+    fn broken_agent_update_descriptor_fails_without_provider() {
+        let mut h = harness();
+        let files: Vec<(&str, &str)> = vec![
+            (crate::update::AGENT_UPDATE_FILE, "version: [not, a, string]\n"),
+        ];
+        swap_bundle(&h, "aaa", &[("reeve-agent", &files)]);
+        let provider = FakeProvider::default();
+        let reports = run(&mut h, &provider);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].state, DeploymentState::Failed);
+        assert!(reports[0].error.as_deref().unwrap().contains("agent-update"));
+        assert!(provider.calls().is_empty());
+        assert_eq!(phases(&h.db)["reeve-agent"], "failed");
     }
 
     #[test]

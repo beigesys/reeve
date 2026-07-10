@@ -46,6 +46,27 @@ pub fn server_capabilities() -> ServerCapabilities {
     use reeve_types::reeve::capabilities::{format_extension, rev};
     #[allow(unused_mut)]
     let mut extensions: Vec<String> = Vec::new();
+    // rev-001/1 Persistent Agent Channel (spec/reeve/02-channel.md
+    // §4.1: the agent MUST NOT attempt the channel unless this is
+    // advertised; C8).
+    if cfg!(feature = "ext-channel") {
+        extensions.push(format_extension(rev::CHANNEL, 1));
+    }
+    // rev-002/1 Remote Terminal (spec/reeve/03-terminal.md §5, C8).
+    if cfg!(feature = "ext-terminal") {
+        extensions.push(format_extension(rev::TERMINAL, 1));
+    }
+    // rev-003/1 Live Status Stream (spec/reeve/04-status-stream.md
+    // §6, C8). Consumed by UI clients, not agents — advertised for
+    // completeness of the §3.3 extension index.
+    if cfg!(feature = "ext-sse") {
+        extensions.push(format_extension(rev::STATUS_STREAM, 1));
+    }
+    // rev-004/1 Health & Status Journal ingest
+    // (spec/reeve/05-health-journal.md §7.3, C5): the journal routes
+    // are unconditional core (router.rs), so this is always usable —
+    // §3.3: advertise exactly what is compiled in.
+    extensions.push(format_extension(rev::HEALTH_JOURNAL, 1));
     // rev-009/1 Secrets (spec/reeve/10-secrets.md §12.3, C7).
     if cfg!(feature = "ext-secrets") {
         extensions.push(format_extension(rev::SECRETS, 1));
@@ -333,8 +354,32 @@ mod tests {
         let caps = server_capabilities();
         assert_eq!(caps.server_version, env!("CARGO_PKG_VERSION"));
         // Advertise exactly what is compiled in (01-framework §3.3).
+        let advertised = |e: &str| caps.extensions.contains(&e.to_string());
         assert_eq!(
-            caps.extensions.contains(&"rev-009/1".to_string()),
+            advertised("rev-001/1"),
+            cfg!(feature = "ext-channel"),
+            "rev-001 advertised iff ext-channel is compiled in: {:?}",
+            caps.extensions
+        );
+        assert_eq!(
+            advertised("rev-002/1"),
+            cfg!(feature = "ext-terminal"),
+            "rev-002 advertised iff ext-terminal is compiled in: {:?}",
+            caps.extensions
+        );
+        assert_eq!(
+            advertised("rev-003/1"),
+            cfg!(feature = "ext-sse"),
+            "rev-003 advertised iff ext-sse is compiled in: {:?}",
+            caps.extensions
+        );
+        assert!(
+            advertised("rev-004/1"),
+            "journal ingest is core; rev-004 always advertised: {:?}",
+            caps.extensions
+        );
+        assert_eq!(
+            advertised("rev-009/1"),
             cfg!(feature = "ext-secrets"),
             "rev-009 advertised iff ext-secrets is compiled in: {:?}",
             caps.extensions

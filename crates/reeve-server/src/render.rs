@@ -22,6 +22,14 @@
 //! rendered (`settings.last_rendered_local`) and re-renders; blob
 //! inserts are `INSERT OR IGNORE` (content-addressed, idempotent);
 //! unreferenced blobs are purged at startup, never mid-flight.
+//!
+//! Per-device render targets (C9, spec/reeve/09-rollouts.md §11.2): a
+//! `device_render_targets` row (V8) pins a device's render to a
+//! specific revision instead of the local head — staged rollouts are
+//! nothing but these rows moving (ext/rollouts.rs is the only writer;
+//! the mechanism is core so a --no-default-features binary keeps a
+//! paused rollout's position stable instead of jumping every device to
+//! head). No row = head-tracking, exactly the pre-C9 behavior.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -486,14 +494,55 @@ fn device_row(conn: &Connection, device_id: &str) -> Result<Option<DeviceRow>, r
     .optional()
 }
 
-/// Read the local head + full tree under the revisions lock, releasing
-/// it before any DB work (locks are short, never held together longer
+/// The pinned render revision for one device
+/// (spec/reeve/09-rollouts.md §11.2): `Some` while a rollout holds or
+/// advances this device, `None` = head-tracking.
+pub fn device_target(
+    conn: &Connection,
+    device_id: &str,
+) -> Result<Option<RevisionId>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT revision FROM device_render_targets WHERE device_id = ?1",
+        params![device_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// All per-device render targets (one snapshot for a full pass).
+fn all_targets(conn: &Connection) -> Result<BTreeMap<String, RevisionId>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT device_id, revision FROM device_render_targets")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// Load one revision's full tree under the revisions lock. Revision 0
+/// (or a store with no head) is the empty tree.
+fn tree_at_revision(
+    store: &RevisionStore,
+    revision: RevisionId,
+) -> Result<FileSet, PipelineError> {
+    load_tree(store, (revision > 0).then_some(revision))
+}
+
+/// Read the local head + the trees a pass needs (head plus every
+/// distinct pinned revision) under the revisions lock, releasing it
+/// before any DB work (locks are short, never held together longer
 /// than needed).
-fn snapshot_tree(state: &AppState) -> Result<(RevisionId, FileSet), PipelineError> {
+fn snapshot_trees(
+    state: &AppState,
+    targets: &BTreeMap<String, RevisionId>,
+) -> Result<(RevisionId, BTreeMap<RevisionId, FileSet>), PipelineError> {
     let store = state.revisions.lock().expect("revisions mutex poisoned");
-    let head = store.head(Stream::Local)?;
-    let tree = load_tree(&store, head)?;
-    Ok((head.unwrap_or(0), tree))
+    let head = store.head(Stream::Local)?.unwrap_or(0);
+    let mut trees = BTreeMap::new();
+    trees.insert(head, tree_at_revision(&store, head)?);
+    for revision in targets.values() {
+        if !trees.contains_key(revision) {
+            trees.insert(*revision, tree_at_revision(&store, *revision)?);
+        }
+    }
+    Ok((head, trees))
 }
 
 /// Render every enrolled device against the current local head. Called
@@ -503,7 +552,16 @@ fn snapshot_tree(state: &AppState) -> Result<(RevisionId, FileSet), PipelineErro
 /// they are authoring errors that only a new commit can fix, and
 /// per-device `rendered_revision` staying behind retries them on poll).
 pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
-    let (head, tree) = snapshot_tree(state)?;
+    // Target snapshot first (db), trees second (revisions) — the
+    // one-direction lock rule (state.rs). A target row written between
+    // the snapshot and the loop renders once at the stale revision; the
+    // writer (ext/rollouts.rs) follows every target move with its own
+    // ensure_current, and the device's next poll self-corrects anyway.
+    let targets = {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        all_targets(&conn)?
+    };
+    let (head, trees) = snapshot_trees(state, &targets)?;
 
     let mut conn = state.db.lock().expect("db mutex poisoned");
     let epoch = server_epoch(&conn)?;
@@ -522,10 +580,21 @@ pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
     };
 
     let mut report = RenderReport::default();
+    let mut updated: Vec<String> = Vec::new();
     for dev in &devices {
-        match render_one(&mut conn, &tree, head, epoch, &state.cfg.registry_endpoint, dev)? {
+        // §11.2: a held/advancing device renders at ITS revision, not
+        // head — the rollout engine times manifest movement, nothing
+        // else changes.
+        let effective = targets.get(&dev.device_id).copied().unwrap_or(head);
+        let tree = trees
+            .get(&effective)
+            .expect("snapshot_trees loaded every effective revision");
+        match render_one(&mut conn, tree, effective, epoch, &state.cfg.registry_endpoint, dev)? {
             Outcome::Unchanged => report.unchanged += 1,
-            Outcome::Updated(_) => report.rendered += 1,
+            Outcome::Updated(_) => {
+                report.rendered += 1;
+                updated.push(dev.device_id.clone());
+            }
             Outcome::Failed(e) => {
                 warn!(device = %dev.device_id, error = %e, "render failed; keeping last good manifest");
                 report.failed.push((dev.device_id.clone(), e));
@@ -545,6 +614,20 @@ pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
         "DELETE FROM settings WHERE key = ?1",
         params![RENDER_DIRTY_KEY],
     )?;
+    drop(conn);
+
+    // Nudge hook (spec/reeve/02-channel.md §4.4): every device whose
+    // manifestVersion just advanced — tree commit or secrets rotation,
+    // both flow through this pass — gets a best-effort `nudge` scope
+    // `desired-state` on its channel. Non-blocking try_send; no retry,
+    // no queue, no ack (a lost nudge costs one poll interval). No-op
+    // for offline devices and in core builds (empty registry).
+    // `ensure_current` deliberately does NOT nudge: it runs inside the
+    // device's own poll, which is already the cycle a nudge would ask
+    // for.
+    for device_id in &updated {
+        state.channels.nudge_desired_state(device_id);
+    }
     Ok(report)
 }
 
@@ -564,14 +647,17 @@ pub fn render_all_logged(state: &AppState) {
 /// devices enrolled after the last pass (no row yet) and revisions whose
 /// pass this device missed (crash, earlier per-device failure).
 pub fn ensure_current(state: &AppState, device_id: &str) -> Result<Outcome, PipelineError> {
-    // Cheap check first: row already at head? Lock order everywhere in
-    // this module: revisions BEFORE db, never held together.
-    {
-        let head = {
-            let store = state.revisions.lock().expect("revisions mutex poisoned");
-            store.head(Stream::Local)?.unwrap_or(0)
-        };
+    // Effective revision = the device's pinned target (§11.2 rollout
+    // hold) or the local head. Cheap check first: row already there?
+    // Lock order everywhere in this module: revisions BEFORE db, never
+    // held together.
+    let head = {
+        let store = state.revisions.lock().expect("revisions mutex poisoned");
+        store.head(Stream::Local)?.unwrap_or(0)
+    };
+    let effective = {
         let conn = state.db.lock().expect("db mutex poisoned");
+        let effective = device_target(&conn, device_id)?.unwrap_or(head);
         let at: Option<i64> = conn
             .query_row(
                 "SELECT rendered_revision FROM device_manifests WHERE device_id = ?1",
@@ -579,17 +665,58 @@ pub fn ensure_current(state: &AppState, device_id: &str) -> Result<Outcome, Pipe
                 |r| r.get(0),
             )
             .optional()?;
-        if at == Some(head) {
+        if at == Some(effective) {
             return Ok(Outcome::Unchanged);
         }
-    }
+        effective
+    };
 
-    let (head, tree) = snapshot_tree(state)?;
+    let tree = {
+        let store = state.revisions.lock().expect("revisions mutex poisoned");
+        tree_at_revision(&store, effective)?
+    };
     let mut conn = state.db.lock().expect("db mutex poisoned");
     let epoch = server_epoch(&conn)?;
     let dev = device_row(&conn, device_id)?
         .ok_or_else(|| PipelineError::UnknownDevice(device_id.to_string()))?;
-    render_one(&mut conn, &tree, head, epoch, &state.cfg.registry_endpoint, &dev)
+    render_one(&mut conn, &tree, effective, epoch, &state.cfg.registry_endpoint, &dev)
+}
+
+/// Render `device_id` at `revision` PURELY (no writes, no manifest
+/// bump) and return the content digest of the resulting file set —
+/// `None` when desired-state refuses the tree for this device. The
+/// rollout engine (ext/rollouts.rs) compares this against the device's
+/// stored `content_digest` to detect "pinned/unaffected" cohort members
+/// (docs/decisions/tree-render.md D12; spec/reeve/09-rollouts.md §11.1)
+/// crash-safely: the probe is a pure recomputation, nothing to lose.
+/// `generation`/revision provenance live only in `manifest.yaml`, which
+/// [`content_digest`] excludes, so placeholder values do not perturb
+/// the digest.
+pub fn probe_content_digest(
+    state: &AppState,
+    device_id: &str,
+    revision: RevisionId,
+) -> Result<Option<String>, PipelineError> {
+    let tree = {
+        let store = state.revisions.lock().expect("revisions mutex poisoned");
+        tree_at_revision(&store, revision)?
+    };
+    let dev = {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        device_row(&conn, device_id)?
+    }
+    .ok_or_else(|| PipelineError::UnknownDevice(device_id.to_string()))?;
+    let ctx = RenderContext {
+        device_id: dev.device_id.clone(),
+        layers: dev.layer_chain(),
+        registry_endpoint: state.cfg.registry_endpoint.clone(),
+        generation: 0,
+        local_revision: revision.max(0) as u64,
+        hub_revision: None,
+    };
+    Ok(desired_state::render(&tree, &ctx)
+        .ok()
+        .map(|out| content_digest(&out)))
 }
 
 /// Startup reconcile (Law 3: startup IS recovery):

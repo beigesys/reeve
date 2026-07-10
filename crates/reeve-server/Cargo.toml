@@ -12,7 +12,14 @@ license.workspace = true
 # restore, replay and verify-restore are CORE (§9.2/§9.4/§9.5), so a
 # --no-default-features binary can still restore targets written by a
 # changeset-enabled one.
-default = ["ext-durability-changeset", "ext-secrets"]
+default = [
+    "ext-durability-changeset",
+    "ext-secrets",
+    "ext-channel",
+    "ext-terminal",
+    "ext-sse",
+    "ext-rollouts",
+]
 ext-durability-changeset = []
 # REV-009 secrets vault (spec/reeve/10-secrets.md, C7): AEAD-encrypted
 # secrets table under the D15 keyfile, device resolve endpoint,
@@ -20,6 +27,26 @@ ext-durability-changeset = []
 # hook. Core (--no-default-features) still builds and serves manifests
 # with `secretsVersion` absent.
 ext-secrets = []
+# REV-001 persistent agent channel, server side (spec/reeve/
+# 02-channel.md, C8): websocket endpoint at /api/reeve/v1/channel,
+# presence-as-fact, best-effort nudges, sub-channel mux. Core builds
+# keep recency-based presence and no push path.
+ext-channel = ["axum/ws"]
+# REV-002 remote terminal bridge (spec/reeve/03-terminal.md, C8):
+# operator websocket leg + byte relay over a rev-002/terminal
+# sub-channel. Rides the channel (the feature graph declares it —
+# docs/build-charter.md CODE BOUNDARY "an extension MAY depend on
+# another (terminal on channel)").
+ext-terminal = ["ext-channel", "dep:futures-util"]
+# REV-003 live status stream (spec/reeve/04-status-stream.md, C8):
+# GET /api/reeve/v1/events SSE endpoint over the in-process event hub.
+ext-sse = ["dep:futures-util"]
+# REV-008 staged rollouts (spec/reeve/09-rollouts.md, C9): WFM-internal
+# manifest-advancement engine + operator API. No agent-facing wire
+# surface, so no capability advertisement. The V8 tables (including the
+# core-honored device_render_targets holds) exist regardless of this
+# feature.
+ext-rollouts = []
 
 [dependencies]
 reeve-types = { path = "../reeve-types" }
@@ -62,7 +89,16 @@ object_store = { workspace = true }
 url = "2"
 chacha20poly1305 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# C8 ext-terminal / ext-sse: stream combinators (WebSocket split for
+# the byte bridge's two pump tasks; unfold/chain for the SSE stream).
+# Same pin family as reeve-agent's.
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# C8 tests: fake reeve-agent / operator websocket clients against the
+# real listener. 0.29 = the exact version axum 0.8's ws feature uses
+# (one tungstenite copy in the tree) — mirrors reeve-agent's pin.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

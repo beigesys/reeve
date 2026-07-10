@@ -1,19 +1,23 @@
-//! Device presence (C5) — online|offline + since.
+//! Device presence (C5 + C8) — online|offline + since.
 //!
-//! The presence SEAM: spec/reeve/02-channel.md §4.3 defines presence
-//! from persistent-channel state ("an open channel means: this device
-//! was reachable at last ping/pong"). Until the channel lands (C8),
+//! Presence-as-fact (spec/reeve/02-channel.md §4.3): an open channel
+//! means "this device was reachable at last ping/pong" — channel
+//! state (channels.rs, populated by ext/channel.rs) sits ABOVE the
+//! recency fallback inside [`device_presence`]; callers never
+//! changed. For a device (or a core build) without the extension,
 //! presence degrades to polling recency exactly as the framework
-//! prescribes for a device without the extension
-//! (spec/reeve/01-framework.md §3.2: "presence from polling recency
-//! only") — `devices.last_seen_at` (touched by every manifest poll and
-//! status/journal ingest) against a freshness threshold.
+//! prescribes (spec/reeve/01-framework.md §3.2: "presence from
+//! polling recency only") — `devices.last_seen_at` (touched by every
+//! manifest poll and status/journal ingest) against a freshness
+//! threshold.
 //!
-//! C8 slots channel state in ABOVE the recency fallback inside
-//! [`device_presence`]; callers never change. §4.3's asymmetry is
-//! preserved by construction: offline means "link down", never "device
-//! dead" — device- vs link-degraded classification is 05-health-journal
-//! §7.4 and consumes this signal, not the reverse.
+//! §4.3's asymmetry is preserved by construction: offline means "link
+//! down", never "device dead" — device- vs link-degraded
+//! classification is 05-health-journal §7.4 and consumes this signal,
+//! not the reverse. Presence TRANSITIONS (channel open/drop) are
+//! published as `device-presence` events by ext/channel.rs
+//! (04-status-stream §6.3); recency decay is not an event source —
+//! only channel state changes are facts worth pushing.
 
 use rusqlite::OptionalExtension as _;
 
@@ -57,19 +61,33 @@ pub fn from_recency(last_seen_at: Option<i64>, now: i64, threshold_secs: i64) ->
     }
 }
 
-/// Presence of one device; `None` = unknown device. Today: recency of
-/// `devices.last_seen_at`; C8 adds "an open channel wins" above the
-/// fallback.
+/// Presence of one device; `None` = unknown device. An open channel
+/// wins (§4.3 presence-as-fact, `since` = channel-open time); recency
+/// of `devices.last_seen_at` is the fallback.
 pub fn device_presence(state: &AppState, device_id: &str) -> anyhow::Result<Option<Presence>> {
-    let conn = state.db.lock().expect("db mutex poisoned");
-    let row: Option<Option<i64>> = conn
-        .query_row(
+    let row: Option<Option<i64>> = {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        conn.query_row(
             "SELECT last_seen_at FROM devices WHERE device_id = ?1",
             rusqlite::params![device_id],
             |r| r.get(0),
         )
-        .optional()?;
-    Ok(row.map(|last_seen| from_recency(last_seen, db::now_secs(), DEFAULT_ONLINE_THRESHOLD_SECS)))
+        .optional()?
+    };
+    let Some(last_seen) = row else {
+        return Ok(None); // unknown device — never invented by a socket
+    };
+    if let Some(since) = state.channels.online_since(device_id) {
+        return Ok(Some(Presence {
+            state: PresenceState::Online,
+            since: Some(since),
+        }));
+    }
+    Ok(Some(from_recency(
+        last_seen,
+        db::now_secs(),
+        DEFAULT_ONLINE_THRESHOLD_SECS,
+    )))
 }
 
 #[cfg(test)]

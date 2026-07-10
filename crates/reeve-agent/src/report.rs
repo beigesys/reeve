@@ -16,11 +16,13 @@
 //!   (`observedAt`, `seq`). Offline => rows stay unsent and go out
 //!   next time, in sequence order (Law 5).
 
+use std::sync::{Arc, Mutex};
+
 use reeve_types::margo::status::{
     ComponentStatus, DEPLOYMENT_STATUS_API_VERSION, DEPLOYMENT_STATUS_KIND, DeploymentStatus,
     DeploymentStatusManifest, StatusError,
 };
-use reeve_types::reeve::health::ReeveStatusExtension;
+use reeve_types::reeve::health::{HealthSample, ReeveStatusExtension};
 use tracing::{info, warn};
 
 use crate::converge::AppReport;
@@ -96,7 +98,18 @@ pub struct StatusSink {
     device_token: Option<String>,
     device_id: String,
     client: reqwest::Client,
+    /// Latest local health sample, attached to outgoing reports as
+    /// `reeve.health` (spec/reeve/05-health-journal.md §7.3 live
+    /// path). Core owns the slot and reads it; the ext-health sampler
+    /// (B7) is its only writer — empty, the field is simply absent,
+    /// which is the whole degradation story (§3.2).
+    health: SharedHealth,
 }
+
+/// Shared latest-health slot (writer: ext-health sampler; reader:
+/// [`StatusSink`]). A plain `Mutex<Option<..>>` — one tiny value,
+/// touched once a minute.
+pub type SharedHealth = Arc<Mutex<Option<HealthSample>>>;
 
 impl StatusSink {
     /// Construct from agent config values. HTTP(S) servers only.
@@ -113,7 +126,14 @@ impl StatusSink {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("static reqwest client config"),
+            health: SharedHealth::default(),
         })
+    }
+
+    /// Handle to the latest-health slot (the ext-health sampler
+    /// clones this and writes samples into it).
+    pub fn health_slot(&self) -> SharedHealth {
+        self.health.clone()
     }
 
     /// The Margo route for one deployment's status
@@ -163,11 +183,12 @@ impl StatusSink {
             };
             // The additive reeve object (§7.3): original timestamp +
             // monotonic seq, assigned at journaling time, never
-            // rewritten.
+            // rewritten — plus the latest health sample when the
+            // ext-health sampler has produced one.
             body.reeve = Some(ReeveStatusExtension {
                 observed_at: row.ts.clone(),
                 seq: row.seq as u64,
-                health: None,
+                health: self.health.lock().ok().and_then(|h| h.clone()),
             });
             let mut req = self.client.post(self.status_url(&row.deployment_id)).json(&body);
             if let Some(token) = &self.device_token {
@@ -324,6 +345,8 @@ mod tests {
             let reeve = &seen[0].2["reeve"];
             assert!(reeve["seq"].as_u64().unwrap() < seen[1].2["reeve"]["seq"].as_u64().unwrap());
             assert!(reeve["observedAt"].as_str().unwrap().contains('T'));
+            // No sampler has filled the slot: health absent (§3.2).
+            assert!(reeve.get("health").is_none());
             // Margo fields unchanged around it.
             assert_eq!(seen[0].2["kind"], "DeploymentStatusManifest");
         } // guard dropped before the next await (clippy: await_holding_lock)
@@ -331,6 +354,51 @@ mod tests {
         // Idempotent: nothing left, second call sends nothing.
         sink.send_unsent(&db).await;
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    /// §7.3 live path: the latest health sample rides on the status
+    /// report as `reeve.health` once the sampler slot is filled.
+    #[tokio::test]
+    async fn send_unsent_attaches_latest_health_sample() {
+        use axum::extract::{Json, State};
+        use axum::routing::post;
+        use std::sync::{Arc, Mutex};
+
+        type Seen = Arc<Mutex<Vec<serde_json::Value>>>;
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/clients/{c}/deployments/{d}/status",
+                post(|State(seen): State<Seen>, Json(body): Json<serde_json::Value>| async move {
+                    seen.lock().unwrap().push(body);
+                    "ok"
+                }),
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = AgentDb::open(&dir.path().join("agent.db")).unwrap();
+        record_reports(&db, &[report()]);
+
+        let sink =
+            StatusSink::from_config(&format!("http://{addr}"), None, Some("dev-1".into())).unwrap();
+        *sink.health_slot().lock().unwrap() = Some(reeve_types::reeve::health::HealthSample {
+            load: Some(vec![0.5, 0.4, 0.3]),
+            agent_version: Some("0.1.0".into()),
+            ..Default::default()
+        });
+        sink.send_unsent(&db).await;
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let health = &seen[0]["reeve"]["health"];
+        assert_eq!(health["agentVersion"], "0.1.0");
+        assert_eq!(health["load"][0], 0.5);
+        // Margo fields still untouched around the additive object.
+        assert_eq!(seen[0]["kind"], "DeploymentStatusManifest");
     }
 
     #[tokio::test]

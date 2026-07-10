@@ -548,6 +548,21 @@ pub async fn put_route(
         }
     }; // db lock dropped BEFORE the render pass (state.rs lock order)
     info!(name = %body.name, scope = %body.scope, version, "secret set");
+    // secret-rotation event (C8, spec/reeve/04-status-stream.md §6.3:
+    // "a secret version changes"): metadata only, never values (§6.4).
+    // `converged` (all affected devices re-resolved) is a later
+    // aggregation; the write is the `propagating` edge.
+    state.events.emit(
+        reeve_types::reeve::events::SseEvent::SecretRotation(
+            reeve_types::reeve::events::SecretRotationEvent {
+                ts: crate::events::EventHub::now_ts(),
+                secret_name: body.name.clone(),
+                scope: body.scope.clone(),
+                version,
+                state: reeve_types::reeve::events::SecretRotationState::Propagating,
+            },
+        ),
+    );
     crate::render::render_all_logged(&state);
     Json(json!({ "name": body.name, "scope": body.scope, "version": version })).into_response()
 }
@@ -563,27 +578,48 @@ pub async fn delete_route(
     if let Err(status) = crate::join_tokens::require_at_least(&state, &identity, Role::Operator) {
         return status.into_response();
     }
-    let existed = {
+    let deleted_version = {
         let mut conn = state.db.lock().expect("db mutex poisoned");
         // Same transaction shape as put_route (Law 3).
-        let result = (|| -> anyhow::Result<bool> {
+        let result = (|| -> anyhow::Result<Option<u64>> {
             let tx = conn.transaction()?;
+            let version: Option<i64> = tx
+                .query_row(
+                    "SELECT version FROM secrets WHERE name = ?1 AND scope = ?2",
+                    params![name, scope],
+                    |r| r.get(0),
+                )
+                .optional()?;
             let b = delete(&tx, &name, &scope)?;
             if b {
                 mark_render_dirty(&tx)?;
             }
             tx.commit()?;
-            Ok(b)
+            Ok(if b { version.map(|v| v as u64) } else { None })
         })();
         match result {
-            Ok(b) => b,
+            Ok(v) => v,
             Err(e) => return internal_error(e),
         }
     };
-    if !existed {
+    let Some(version) = deleted_version else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     info!(name = %name, scope = %scope, "secret deleted");
+    // Deletion is a version change for every referencing app (§12.4:
+    // references stop resolving; their secrets_version hash moves) —
+    // same propagating edge as a rotation (C8, 04-status-stream §6.3).
+    state.events.emit(
+        reeve_types::reeve::events::SseEvent::SecretRotation(
+            reeve_types::reeve::events::SecretRotationEvent {
+                ts: crate::events::EventHub::now_ts(),
+                secret_name: name.clone(),
+                scope: scope.clone(),
+                version,
+                state: reeve_types::reeve::events::SecretRotationState::Propagating,
+            },
+        ),
+    );
     crate::render::render_all_logged(&state);
     Json(json!({ "deleted": true })).into_response()
 }

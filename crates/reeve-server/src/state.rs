@@ -38,6 +38,17 @@ pub struct AppState {
     /// writer per layer). v1 single-tier: [`Ownership::Root`]; C10
     /// populates [`Ownership::Gateway`] from tier configuration.
     pub ownership: Arc<Ownership>,
+    /// C8 event hub (spec/reeve/04-status-stream.md §6): producers in
+    /// core and extensions emit typed rev-003/1 events here; the SSE
+    /// endpoint (ext/sse.rs, ext-sse) subscribes. Droppable,
+    /// at-most-once, RAM only (events.rs).
+    pub events: crate::events::EventHub,
+    /// C8 per-device channel registry (spec/reeve/02-channel.md §4):
+    /// populated by the websocket endpoint (ext/channel.rs,
+    /// ext-channel); consulted by presence (§4.3 presence-as-fact)
+    /// and the render pipeline's nudge hook (§4.4). Always empty in a
+    /// core build — presence degrades to recency, nudges are no-ops.
+    pub channels: crate::channels::Channels,
 }
 
 impl AppState {

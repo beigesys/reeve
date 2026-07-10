@@ -69,6 +69,25 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "secrets",
         sql: include_str!("migrations/V6__secrets.sql"),
     },
+    // Terminal session audit rows exist regardless of ext-terminal
+    // (same rule as V6): schema stable across feature sets, and
+    // startup can finalize dangling rows left by a full binary
+    // (spec/reeve/03-terminal.md §5.4).
+    EmbeddedMigration {
+        version: 7,
+        name: "terminal",
+        sql: include_str!("migrations/V7__terminal.sql"),
+    },
+    // Rollout state + per-device render targets exist regardless of
+    // ext-rollouts (same rule as V6/V7): the CORE render pipeline
+    // honors device_render_targets rows, so a rollout paused by a full
+    // binary stays a stable position (spec/reeve/09-rollouts.md §11.2)
+    // under a core binary too.
+    EmbeddedMigration {
+        version: 8,
+        name: "rollouts",
+        sql: include_str!("migrations/V8__rollouts.sql"),
+    },
 ];
 
 /// Open the server DB with the D6 pragmas. Idempotent.

@@ -68,6 +68,47 @@ pub fn build(state: AppState) -> Router {
             "/api/secrets/{scope}/{name}",
             delete(crate::ext::secrets::delete_route),
         );
+    // Staged rollouts (C9, spec/reeve/09-rollouts.md §11.6/§11.8):
+    // create/pause/resume/abort operator+, list/status viewer+ — all
+    // enforced (and audited) inside the handlers.
+    #[cfg(feature = "ext-rollouts")]
+    let human = human
+        .route(
+            "/api/rollouts",
+            post(crate::ext::rollouts::create_route).get(crate::ext::rollouts::list_route),
+        )
+        .route(
+            "/api/rollouts/{rollout_id}",
+            get(crate::ext::rollouts::status_route),
+        )
+        .route(
+            "/api/rollouts/{rollout_id}/pause",
+            post(crate::ext::rollouts::pause_route),
+        )
+        .route(
+            "/api/rollouts/{rollout_id}/resume",
+            post(crate::ext::rollouts::resume_route),
+        )
+        .route(
+            "/api/rollouts/{rollout_id}/abort",
+            post(crate::ext::rollouts::abort_route),
+        );
+    // Live status stream (C8, spec/reeve/04-status-stream.md §6.1):
+    // SSE, viewer+ (enforced in the handler), never unauthenticated —
+    // inside the human_auth layer like every other human read.
+    #[cfg(feature = "ext-sse")]
+    let human = human.route(
+        "/api/reeve/v1/events",
+        get(crate::ext::sse::events_route),
+    );
+    // Remote terminal UI leg (C8, spec/reeve/03-terminal.md §5.1):
+    // the one genuinely bidirectional UI websocket. Operator+ and
+    // password/proxy-mode-only, enforced (and audited) in the handler.
+    #[cfg(feature = "ext-terminal")]
+    let human = human.route(
+        "/api/reeve/v1/terminal/{device_id}",
+        get(crate::ext::terminal::terminal_route),
+    );
     let human = human.layer(middleware::from_fn_with_state(
         state.clone(),
         auth::human_auth,
@@ -83,8 +124,9 @@ pub fn build(state: AppState) -> Router {
     // Status ingest + journal backfill (C5; spec/reeve/05-health-journal.md
     // §7.3): routes live in device-api, persistence here. Same device
     // credential, own router because its state is the ingest seam.
-    let ingest_svc: Arc<dyn device_api::StatusIngest> =
-        Arc::new(crate::ingest::SqliteStatusIngest::new(state.db.clone()));
+    let ingest_svc: Arc<dyn device_api::StatusIngest> = Arc::new(
+        crate::ingest::SqliteStatusIngest::new(state.db.clone(), state.events.clone()),
+    );
     let status = device_api::status::router(ingest_svc).layer(middleware::from_fn_with_state(
         token_store.clone(),
         device_api::device_auth,
@@ -93,7 +135,17 @@ pub fn build(state: AppState) -> Router {
     let device = Router::new()
         .route("/api/reeve/v1/manifest", get(delivery::manifest))
         .route("/api/reeve/v1/capabilities", get(delivery::capabilities))
-        .route("/v2/", get(delivery::v2_root))
+        .route("/v2/", get(delivery::v2_root));
+    // Persistent agent channel (C8, spec/reeve/02-channel.md §4.1):
+    // websocket upgrade behind the SAME device credential — unknown/
+    // unauthenticated clients are rejected by device_auth BEFORE the
+    // upgrade completes.
+    #[cfg(feature = "ext-channel")]
+    let device = device.route(
+        reeve_types::reeve::channel::CHANNEL_PATH,
+        get(crate::ext::channel::channel_route),
+    );
+    let device = device
         .route(
             "/v2/reeve/bundles/{device_id}/manifests/{digest}",
             get(delivery::v2_manifest),
