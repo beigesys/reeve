@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/reeve",
+    "crates/reeve-agent",
+    "crates/reeve-types",
+    "crates/margo-package",
+    "crates/desired-state",
+    "crates/repo-store",
+    "crates/device-api",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+gix = "0.85"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
