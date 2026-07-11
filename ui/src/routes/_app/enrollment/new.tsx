@@ -11,6 +11,7 @@ import type { CreatedJoinToken } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SearchSelect } from '@/components/search-select'
+import { LocationFields } from '@/components/location-fields'
 import {
   Card,
   CardContent,
@@ -210,28 +211,35 @@ function JoinTokenCreatePage() {
                 </span>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                {(
-                  [
-                    ['Fleet', fleet, setFleet, (d: (typeof deviceRows)[number]) => d.fleet],
-                    ['Site', site, setSite, (d: (typeof deviceRows)[number]) => d.site],
-                    ['Device type', type, setType, (d: (typeof deviceRows)[number]) => d.type],
-                  ] as const
-                ).map(([label, value, setter, get], i) => (
-                  <div key={label} className="flex flex-col gap-1.5">
-                    <Label htmlFor={`assign-${i}`}>{label}</Label>
-                    <SearchSelect
-                      id={`assign-${i}`}
-                      value={value}
-                      onChange={setter}
-                      options={distinct(get).map((o) => ({ value: o, label: o }))}
-                      placeholder="none"
-                      emptyText="Type to add a new one."
-                      creatable
-                      clearable
-                    />
-                  </div>
-                ))}
+                <LocationFields
+                  idPrefix="assign"
+                  fleet={fleet}
+                  site={site}
+                  onFleetChange={setFleet}
+                  onSiteChange={setSite}
+                />
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="assign-type">Device type</Label>
+                  <SearchSelect
+                    id="assign-type"
+                    value={type}
+                    onChange={setType}
+                    options={distinct((d) => d.type).map((o) => ({
+                      value: o,
+                      label: o,
+                    }))}
+                    placeholder="none"
+                    emptyText="Type to add a new one."
+                    creatable
+                    clearable
+                  />
+                </div>
               </div>
+              <span className="text-xs text-muted-foreground">
+                A site belongs to its fleet. On enroll the server creates the
+                fleet and site if they don't exist yet — a join never fails on
+                group bookkeeping.
+              </span>
               <div className="flex flex-col gap-1.5">
                 <Label>Tags</Label>
                 <div className="flex flex-wrap gap-1">

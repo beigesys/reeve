@@ -156,11 +156,64 @@ if [ "${COUNT:-0}" -lt "$N" ]; then
 fi
 
 # Assignment profiles: fleet | site | type | tags. Round-robin.
+# NOTE (REV-011 containment): a Site belongs to exactly one Fleet, so
+# every (fleet, site) pair below is a valid nesting — plant-a lives
+# under north, plant-b under south. Device-type is orthogonal (a type
+# is not nested under a site), tags are free.
 PROFILE_FLEET=(north  north   south)
 PROFILE_SITE=(plant-a plant-a plant-b)
 PROFILE_TYPE=(hmi     sensor  hmi)
 PROFILE_TAGS=('{"env":"prod","line":"1"}' '{"env":"prod","line":"1"}' '{"env":"staging","line":"2"}')
 NPROFILE=${#PROFILE_FLEET[@]}
+
+# --- build the location containment tree first (REV-011) -------------
+# The interactive device PATCH is STRICT: it rejects a (fleet, site)
+# pair whose site is not an existing group under that fleet. So create
+# the fleets, then each site UNDER its fleet (POST /api/groups with
+# parentId = the fleet's id), BEFORE assigning any device. Idempotent:
+# POST tolerates 409 (already exists — e.g. backfilled on a re-run);
+# ids are always resolved by reading the tree back.
+say "building the location containment tree (fleets -> sites)"
+group_tree() { curl -fsS -b "$COOKIES" "$BASE/api/groups" 2>/dev/null; }
+
+fleet_id() {  # NAME -> prints that fleet's group id (empty if absent)
+  group_tree | python3 -c 'import sys,json
+name=sys.argv[1]
+t=json.load(sys.stdin)
+print(next((f["id"] for f in t.get("fleets",[]) if f["name"]==name), ""))' "$1"
+}
+
+ensure_fleet() {  # NAME -> prints fleet id (creates if missing)
+  curl -s -o /dev/null -X POST "$BASE/api/groups" \
+    -H 'content-type: application/json' -b "$COOKIES" \
+    -d "{\"kind\":\"fleet\",\"name\":\"$1\"}"
+  fleet_id "$1"
+}
+
+ensure_site() {  # FLEET_ID SITE_NAME  (creates the site under the fleet)
+  curl -s -o /dev/null -X POST "$BASE/api/groups" \
+    -H 'content-type: application/json' -b "$COOKIES" \
+    -d "{\"kind\":\"site\",\"name\":\"$2\",\"parentId\":$1}"
+}
+
+# Ensure each distinct fleet, then each distinct (fleet, site) pair from
+# the profiles above — no hard-coded topology, so editing the profiles
+# stays enough.
+declare -A FLEET_IDS=()
+for f in "${PROFILE_FLEET[@]}"; do
+  [ -n "${FLEET_IDS[$f]:-}" ] && continue
+  FLEET_IDS[$f]="$(ensure_fleet "$f")"
+  say "  fleet $f -> group ${FLEET_IDS[$f]}"
+done
+declare -A SEEN_SITE=()
+for p in $(seq 0 $((NPROFILE - 1))); do
+  f="${PROFILE_FLEET[$p]}"; s="${PROFILE_SITE[$p]}"
+  key="$f/$s"
+  [ -n "${SEEN_SITE[$key]:-}" ] && continue
+  SEEN_SITE[$key]=1
+  ensure_site "${FLEET_IDS[$f]}" "$s"
+  say "  site $s -> under fleet $f"
+done
 
 say "assigning devices into fleets / sites / types"
 i=0
@@ -196,9 +249,10 @@ cat <<EOF
     UI:        $BASE
     login:     $ADMIN_USER / $ADMIN_PASS
     devices:   $N (Devices page — presence turns green as they connect)
-    hierarchy: Fleet north -> Site plant-a -> Type hmi/sensor
-               Fleet south -> Site plant-b -> Type hmi
-               (open Fleet to drill in; devices renamed + tagged)
+    hierarchy: Fleet north -> Site plant-a -> devices (Type hmi/sensor)
+               Fleet south -> Site plant-b -> devices (Type hmi)
+               (containment: each Site nests under exactly one Fleet;
+                Type is orthogonal. Open a Fleet to drill in.)
     deployed:  hello -> Site plant-a (its devices carry the stack)
     terminal:  open a device → Terminal tab → you get a shell in it
 

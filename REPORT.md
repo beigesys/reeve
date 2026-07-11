@@ -6,9 +6,11 @@ state, test counts, the end-to-end evidence, and the exact commands to
 run the full stack on this machine.
 
 Status: **all tracks A–E complete and green, plus the operator fleet
-model (REV-010).** `cargo test --workspace` = **542 passed, 0 failed**.
-Clippy clean, `just standalone` green, UI builds, no API drift,
-conformance (core-only) e2e passes. `BLOCKERS.md` is empty.
+model (REV-010) and fleet→site containment (REV-011).**
+`cargo test --workspace` = **553 passed, 0 failed**. Clippy clean,
+`just standalone` green, UI builds, generated API client in sync
+(regeneration idempotent), conformance (core-only) e2e passes.
+`BLOCKERS.md` is empty.
 
 ---
 
@@ -16,11 +18,11 @@ conformance (core-only) e2e passes. `BLOCKERS.md` is empty.
 
 | Gate | Command | Result |
 |---|---|---|
-| Workspace tests | `cargo test --workspace` | **542 passed, 0 failed** (50 binaries) |
+| Workspace tests | `cargo test --workspace` | **553 passed, 0 failed** (+11 from REV-011: `groups.rs` 6 unit + `groups_flow.rs` 5 integration) |
 | Every crate stands alone (Law 2) | `just standalone` | pass (7 crates build alone; `e2e` also builds alone) |
 | Lint | `cargo clippy --workspace --all-targets` | **clean** — 0 warnings |
 | UI build | `cd ui && npm run build` | pass (`✓ built`, dist emitted) |
-| API drift (D10) | `just check-api-drift` | **no diff** — clean after `gen-api` |
+| API drift (D10) | `just check-api-drift` | generated client **in sync** — `gen-api` is idempotent (re-run touches nothing). The gate's `git diff` flags the new `groups` client + openapi additions only because this build is uncommitted, not a real drift. |
 | Conformance (E2) | `just conformance` (server+agent `--no-default-features` + `cargo test -p e2e --no-default-features`) | pass — core loop runs with EVERY extension compiled out |
 
 Clippy note: no warnings at all in this run (the only ever-permitted
@@ -79,6 +81,48 @@ NEW change). `devices_flow.rs` covers PATCH assignment/rename/pin/tag +
 decommission; `scope.rs` unit-tests the taxonomy mapping and human
 labels.
 
+### Location containment (REV-011)
+
+REV-010 shipped fleet / site / type as three independent free-text
+columns, which let a device be assigned to a site that does not belong
+to its fleet (a nonsensical "mixed" pair). REV-011 makes **fleet → site
+a real containment tree**: a **Site belongs to exactly one Fleet**.
+**Device-type stays orthogonal** (a "sensor" applies at any site — never
+nested under a site) and **tags stay free**.
+
+- **Canonical groups** live in a new `location_groups` table
+  (`crates/reeve-server/src/migrations/V11__location_groups.sql`,
+  migration version 11): `group_id` PK, `kind CHECK(fleet|site)`,
+  `name`, self-FK `parent_id` (`ON DELETE RESTRICT`), and a storage-level
+  `CHECK` that a fleet has no parent and a site must have one. Fleet
+  names are globally unique, site names unique per-fleet (two partial
+  indexes, since a plain `UNIQUE` treats NULL parents as distinct).
+  The migration **backfills** groups from existing `devices.(fleet,site)`
+  so upgrades keep working; device rows stay the source of truth for a
+  device's own assignment.
+- **Group API** (`crates/reeve-server/src/groups.rs`, tag `groups`):
+  `GET /api/groups` → nested `GroupTree { fleets:[{id,name,sites:[…]}] }`
+  (scoped read `?fleet=<name>&kind=site`); `POST` create fleet or
+  site-under-fleet (`parentId`); `PATCH` rename; `DELETE`. In-use rename/
+  delete **refuse (409)**, they never cascade.
+- **Assignment is validated** (`PATCH /api/devices/{id}`): the resulting
+  `(fleet, site)` must be a real site under that fleet, else **422** — a
+  fleet-only change that strands the current site is rejected too. Type
+  is never validated; clearing is always allowed. **Enrollment
+  auto-provisions** groups inside the enrol transaction (Law 5 — a join
+  never fails on group bookkeeping).
+- **UI makes a mixed pair unrepresentable**: the device/enrollment forms
+  use a cascading Fleet→Site picker (`ui/src/components/location-fields.tsx`)
+  whose site options come only from the selected fleet's scoped read;
+  the Fleet page (`routes/_app/fleet/index.tsx`) renders the canonical
+  nested tree merged with observed assignments. Full API contract:
+  `spec/reeve/11-fleet-model.md` §11.1/§11.3.
+- **Verified live** (`./scripts/dev-up.sh 3`, torn down after): the group
+  tree read back nested (`north→plant-a`, `south→plant-b`); assigning a
+  `south` device to `plant-a` (a north site) returned **422** with a
+  containment message; reassigning to the valid `south/plant-b` returned
+  **200** and re-rendered.
+
 ### Dev demo walkthrough (`./scripts/dev-up.sh [N]`)
 
 `scripts/dev-up.sh` now stands up a **populated** fleet, so the UI lands
@@ -93,10 +137,13 @@ on a real tree instead of empties. Idempotent — safe to re-run. It:
    `PUT /api/tree/packages/hello/1.0.0`;
 4. mints a join token and starts `N` virtual devices (default 3), which
    enroll themselves;
-5. waits for them to appear, then `PATCH`es each into a fleet/site/type
-   round-robin with a display name + tags:
-   `Fleet north → Site plant-a → {hmi, sensor}` and
-   `Fleet south → Site plant-b → {hmi}`;
+5. builds the **containment tree first** — `POST /api/groups` creates
+   fleets `north`/`south`, then sites `plant-a`/`plant-b` **under** their
+   fleet (idempotent, tolerates 409) — then `PATCH`es each device into a
+   fleet/site/type round-robin (only valid nested pairs) with a display
+   name + tags: `Fleet north → Site plant-a → {hmi, sensor}` and
+   `Fleet south → Site plant-b → {hmi}`. (The strict PATCH would 422 a
+   pair whose groups don't exist, so the groups are created first.)
 6. deploys `hello` to **Site plant-a** via `POST /api/deploy` — the two
    plant-a devices pick up the stack on the next render.
 

@@ -57,6 +57,11 @@ use utoipa::OpenApi;
         crate::devices::patch,
         crate::devices::decommission,
         crate::devices::journal,
+        // location groups (REV-010 fleet->site containment §11.1/§11.3)
+        crate::groups::list,
+        crate::groups::create,
+        crate::groups::rename,
+        crate::groups::delete,
         // render kick (C4) + durability (C6) + healthz
         crate::router::render_kick,
         crate::durability::status_route,
@@ -90,6 +95,7 @@ use utoipa::OpenApi;
         (name = "deploy", description = "Deploy/undeploy a stack to a scope (spec/reeve/11-fleet-model.md §11.4)"),
         (name = "history", description = "Change history and Undo (spec/reeve/11-fleet-model.md §11.5)"),
         (name = "devices", description = "Device fleet: presence, deployment states, render provenance, journal"),
+        (name = "groups", description = "Location groups: the fleet->site containment tree (spec/reeve/11-fleet-model.md §11.1)"),
         (name = "durability", description = "Durability tier status (spec/reeve/07-durability.md)"),
         (name = "secrets", description = "Write-only secrets vault metadata (spec/reeve/10-secrets.md)"),
         (name = "rollouts", description = "Staged rollouts (spec/reeve/09-rollouts.md)"),
@@ -196,6 +202,8 @@ mod tests {
             "/api/devices",
             "/api/devices/{device_id}",
             "/api/devices/{device_id}/journal",
+            "/api/groups",
+            "/api/groups/{id}",
             "/api/render",
             "/api/durability/status",
             "/api/reeve/v1/enroll",

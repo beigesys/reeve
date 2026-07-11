@@ -9,10 +9,12 @@ import {
 } from '@/api/endpoints/rollouts/rollouts'
 import type { GateSpec, Scope } from '@/api/model'
 import { devicesInScope, scopeLabel } from '@/lib/scope'
+import { useLocationTree } from '@/lib/groups'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SearchSelect } from '@/components/search-select'
+import type { ComboboxOption } from '@/components/search-select'
 import {
   Card,
   CardContent,
@@ -53,6 +55,19 @@ function RolloutCreatePage() {
   const distinct = (get: (d: (typeof allDevices)[number]) => string | null | undefined) =>
     [...new Set(allDevices.map(get).filter((v): v is string => !!v))].sort()
 
+  // Canonical fleet/site groups (§11.1), unioned with values devices carry.
+  const { fleetNames, siteOptions } = useLocationTree()
+  const unionOpts = (
+    canonical: ComboboxOption[],
+    observed: string[],
+  ): ComboboxOption[] => {
+    const seen = new Set(canonical.map((o) => o.value))
+    return [
+      ...canonical,
+      ...observed.filter((v) => !seen.has(v)).map((v) => ({ value: v, label: v })),
+    ].sort((a, b) => a.value.localeCompare(b.value))
+  }
+
   const [scopeKind, setScopeKind] = useState<ScopeKind>('all')
   const [scopeName, setScopeName] = useState('')
   const [deviceFilter, setDeviceFilter] = useState('')
@@ -68,13 +83,16 @@ function RolloutCreatePage() {
   const [failureThreshold, setFailureThreshold] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const nameOptions =
+  const nameOptions: ComboboxOption[] =
     scopeKind === 'fleet'
-      ? distinct((d) => d.fleet)
+      ? unionOpts(
+          fleetNames.map((n) => ({ value: n, label: n })),
+          distinct((d) => d.fleet),
+        )
       : scopeKind === 'site'
-        ? distinct((d) => d.site)
+        ? unionOpts(siteOptions, distinct((d) => d.site))
         : scopeKind === 'type'
-          ? distinct((d) => d.type)
+          ? distinct((d) => d.type).map((n) => ({ value: n, label: n }))
           : []
 
   const needsName =
@@ -195,7 +213,7 @@ function RolloutCreatePage() {
                 <SearchSelect
                   value={scopeName}
                   onChange={setScopeName}
-                  options={nameOptions.map((o) => ({ value: o, label: o }))}
+                  options={nameOptions}
                   placeholder={`Select ${scopeKind}…`}
                   emptyText={`No ${scopeKind} groups yet.`}
                   clearable

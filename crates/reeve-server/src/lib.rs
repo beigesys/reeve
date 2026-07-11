@@ -20,6 +20,7 @@ pub mod deploy;
 pub mod devices;
 pub mod events;
 pub mod device_tokens;
+pub mod groups;
 pub mod durability;
 pub mod enroll;
 pub mod ext;

@@ -213,6 +213,18 @@ impl EnrollmentService for SqliteEnrollmentService {
                                 ],
                             )
                             .map_err(|e| internal(&e))?;
+                            // Containment (§11.1/§11.3): auto-provision the
+                            // token's fleet/site groups so the assignment is
+                            // valid, creating the site UNDER the fleet
+                            // (never orphaned). Enrollment never REJECTS
+                            // over a missing group — a device join must not
+                            // fail on group bookkeeping (Law 5).
+                            crate::groups::ensure_groups(
+                                &tx,
+                                token.fleet.as_deref(),
+                                token.site.as_deref(),
+                            )
+                            .map_err(|e| internal(&e))?;
                             (id, false)
                         }
                     }

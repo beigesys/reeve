@@ -476,6 +476,247 @@
         }
       }
     },
+    "/api/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "GET /api/groups (viewer+) — the fleet->site containment tree.\n`?fleet=<name>` (optionally `&kind=site`) scopes the read to one\nfleet's children (lazy drill-down).",
+        "operationId": "groups_list",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Optional filter (`fleet`|`site`); with `fleet` requests that fleet's sites",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fleet",
+            "in": "query",
+            "description": "Scoped-children read: only this fleet's subtree",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The fleet->site containment tree (or one fleet's subtree)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupTree"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown fleet (scoped read)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "POST /api/groups (operator+) — create a fleet or a site. A site\nrequires `parentId` = an existing fleet; a fleet must have none.\nDuplicate name (a fleet globally, a site within its fleet) => 409.",
+        "operationId": "groups_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "409": {
+            "description": "Duplicate name (fleet globally, or site within its fleet)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name, or a site without/with a bad parent fleet, or a fleet with a parent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{id}": {
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "DELETE /api/groups/{id} (operator+) — delete a group. Refused (409)\nwhen it is still referenced by a device (or, for a fleet, still has\nchild sites): refuse is safer than a silent cascade that would orphan\nlive assignments — reassign/remove first.",
+        "operationId": "groups_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "In use — reassign devices (and remove child sites) first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "PATCH /api/groups/{id} (operator+) — rename a group. Refused (409) when\nthe group is still referenced by a device (or, for a fleet, still has\nchild sites): the device name columns stay valid because a live name is\nnever changed out from under them — reassign first. A rename that\ncollides with a sibling is also 409.",
+        "operationId": "groups_rename",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupNode"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "In use (reassign first), or duplicate name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/history": {
       "get": {
         "tags": [
@@ -2458,6 +2699,30 @@
           }
         }
       },
+      "CreateGroupRequest": {
+        "type": "object",
+        "description": "`POST /api/groups` body: create a fleet (no parent) or a site (parent =\nan existing fleet's id).",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/GroupKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Required for a site (the containing fleet's id); MUST be absent for\na fleet."
+          }
+        }
+      },
       "CreateJoinTokenRequest": {
         "type": "object",
         "properties": {
@@ -3509,6 +3774,31 @@
           }
         }
       },
+      "FleetNode": {
+        "type": "object",
+        "description": "One fleet with its contained sites.",
+        "required": [
+          "id",
+          "name",
+          "sites"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SiteNode"
+            },
+            "description": "Sites contained by this fleet, ordered by name."
+          }
+        }
+      },
       "GatePolicy": {
         "type": "object",
         "description": "Effective gate policy in a [`RolloutDetail`].",
@@ -3574,6 +3864,58 @@
           }
         },
         "additionalProperties": false
+      },
+      "GroupKind": {
+        "type": "string",
+        "description": "A group kind (§11.1): only fleet and site are contained groups.",
+        "enum": [
+          "fleet",
+          "site"
+        ]
+      },
+      "GroupNode": {
+        "type": "object",
+        "description": "A single created/renamed group.",
+        "required": [
+          "id",
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/GroupKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The parent fleet's id for a site; `null` for a fleet."
+          }
+        }
+      },
+      "GroupTree": {
+        "type": "object",
+        "description": "`GET /api/groups` body: the fleet->site containment tree. A scoped\nread (`?fleet=<name>`) returns the same shape with only that fleet's\nsubtree in `fleets`.",
+        "required": [
+          "fleets"
+        ],
+        "properties": {
+          "fleets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FleetNode"
+            }
+          }
+        }
       },
       "HealthKind": {
         "type": "string",
@@ -4194,6 +4536,18 @@
             "format": "int64",
             "description": "Monotonic per-device sequence number (§7.1).",
             "minimum": 0
+          }
+        }
+      },
+      "RenameGroupRequest": {
+        "type": "object",
+        "description": "`PATCH /api/groups/{id}` body: rename a group.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -4960,6 +5314,23 @@
           }
         }
       },
+      "SiteNode": {
+        "type": "object",
+        "description": "One site under a fleet in the [`GroupTree`].",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "StackRef": {
         "type": "object",
         "description": "The stack to deploy: a vendored package (`packages/<package>/\n<version>/`, D11) and an optional deployment profile. `name` is the\napp's dir under the scope layer (`apps/<name>/`) — defaults to the\npackage name, so `{package, version}` is the minimal stack.",
@@ -5450,6 +5821,10 @@
     {
       "name": "devices",
       "description": "Device fleet: presence, deployment states, render provenance, journal"
+    },
+    {
+      "name": "groups",
+      "description": "Location groups: the fleet->site containment tree (spec/reeve/11-fleet-model.md §11.1)"
     },
     {
       "name": "durability",

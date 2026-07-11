@@ -26,10 +26,12 @@ import { Route as AppSecretsSetRouteImport } from './routes/_app/secrets/set'
 import { Route as AppRolloutsNewRouteImport } from './routes/_app/rollouts/new'
 import { Route as AppRolloutsRolloutIdRouteImport } from './routes/_app/rollouts/$rollout-id'
 import { Route as AppPackagesNewRouteImport } from './routes/_app/packages/new'
+import { Route as AppGroupsNewRouteImport } from './routes/_app/groups/new'
 import { Route as AppEnrollmentNewRouteImport } from './routes/_app/enrollment/new'
 import { Route as AppDevicesDeviceIdIndexRouteImport } from './routes/_app/devices/$device-id/index'
 import { Route as AppPackagesNameVersionRouteImport } from './routes/_app/packages/$name.$version'
 import { Route as AppOpsTierTokensNewRouteImport } from './routes/_app/ops/tier-tokens/new'
+import { Route as AppGroupsGroupIdEditRouteImport } from './routes/_app/groups/$group-id/edit'
 import { Route as AppDevicesDeviceIdEditRouteImport } from './routes/_app/devices/$device-id/edit'
 
 const SetupRoute = SetupRouteImport.update({
@@ -116,6 +118,11 @@ const AppPackagesNewRoute = AppPackagesNewRouteImport.update({
   path: '/packages/new',
   getParentRoute: () => AppRoute,
 } as any)
+const AppGroupsNewRoute = AppGroupsNewRouteImport.update({
+  id: '/groups/new',
+  path: '/groups/new',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppEnrollmentNewRoute = AppEnrollmentNewRouteImport.update({
   id: '/enrollment/new',
   path: '/enrollment/new',
@@ -136,6 +143,11 @@ const AppOpsTierTokensNewRoute = AppOpsTierTokensNewRouteImport.update({
   path: '/ops/tier-tokens/new',
   getParentRoute: () => AppRoute,
 } as any)
+const AppGroupsGroupIdEditRoute = AppGroupsGroupIdEditRouteImport.update({
+  id: '/groups/$group-id/edit',
+  path: '/groups/$group-id/edit',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppDevicesDeviceIdEditRoute = AppDevicesDeviceIdEditRouteImport.update({
   id: '/devices/$device-id/edit',
   path: '/devices/$device-id/edit',
@@ -147,6 +159,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/enrollment/new': typeof AppEnrollmentNewRoute
+  '/groups/new': typeof AppGroupsNewRoute
   '/packages/new': typeof AppPackagesNewRoute
   '/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/rollouts/new': typeof AppRolloutsNewRoute
@@ -161,6 +174,7 @@ export interface FileRoutesByFullPath {
   '/rollouts/': typeof AppRolloutsIndexRoute
   '/secrets/': typeof AppSecretsIndexRoute
   '/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
+  '/groups/$group-id/edit': typeof AppGroupsGroupIdEditRoute
   '/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/devices/$device-id/': typeof AppDevicesDeviceIdIndexRoute
@@ -170,6 +184,7 @@ export interface FileRoutesByTo {
   '/setup': typeof SetupRoute
   '/': typeof AppIndexRoute
   '/enrollment/new': typeof AppEnrollmentNewRoute
+  '/groups/new': typeof AppGroupsNewRoute
   '/packages/new': typeof AppPackagesNewRoute
   '/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/rollouts/new': typeof AppRolloutsNewRoute
@@ -184,6 +199,7 @@ export interface FileRoutesByTo {
   '/rollouts': typeof AppRolloutsIndexRoute
   '/secrets': typeof AppSecretsIndexRoute
   '/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
+  '/groups/$group-id/edit': typeof AppGroupsGroupIdEditRoute
   '/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/devices/$device-id': typeof AppDevicesDeviceIdIndexRoute
@@ -195,6 +211,7 @@ export interface FileRoutesById {
   '/setup': typeof SetupRoute
   '/_app/': typeof AppIndexRoute
   '/_app/enrollment/new': typeof AppEnrollmentNewRoute
+  '/_app/groups/new': typeof AppGroupsNewRoute
   '/_app/packages/new': typeof AppPackagesNewRoute
   '/_app/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/_app/rollouts/new': typeof AppRolloutsNewRoute
@@ -209,6 +226,7 @@ export interface FileRoutesById {
   '/_app/rollouts/': typeof AppRolloutsIndexRoute
   '/_app/secrets/': typeof AppSecretsIndexRoute
   '/_app/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
+  '/_app/groups/$group-id/edit': typeof AppGroupsGroupIdEditRoute
   '/_app/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/_app/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/_app/devices/$device-id/': typeof AppDevicesDeviceIdIndexRoute
@@ -220,6 +238,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/enrollment/new'
+    | '/groups/new'
     | '/packages/new'
     | '/rollouts/$rollout-id'
     | '/rollouts/new'
@@ -234,6 +253,7 @@ export interface FileRouteTypes {
     | '/rollouts/'
     | '/secrets/'
     | '/devices/$device-id/edit'
+    | '/groups/$group-id/edit'
     | '/ops/tier-tokens/new'
     | '/packages/$name/$version'
     | '/devices/$device-id/'
@@ -243,6 +263,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/'
     | '/enrollment/new'
+    | '/groups/new'
     | '/packages/new'
     | '/rollouts/$rollout-id'
     | '/rollouts/new'
@@ -257,6 +278,7 @@ export interface FileRouteTypes {
     | '/rollouts'
     | '/secrets'
     | '/devices/$device-id/edit'
+    | '/groups/$group-id/edit'
     | '/ops/tier-tokens/new'
     | '/packages/$name/$version'
     | '/devices/$device-id'
@@ -267,6 +289,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/_app/'
     | '/_app/enrollment/new'
+    | '/_app/groups/new'
     | '/_app/packages/new'
     | '/_app/rollouts/$rollout-id'
     | '/_app/rollouts/new'
@@ -281,6 +304,7 @@ export interface FileRouteTypes {
     | '/_app/rollouts/'
     | '/_app/secrets/'
     | '/_app/devices/$device-id/edit'
+    | '/_app/groups/$group-id/edit'
     | '/_app/ops/tier-tokens/new'
     | '/_app/packages/$name/$version'
     | '/_app/devices/$device-id/'
@@ -413,6 +437,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPackagesNewRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/groups/new': {
+      id: '/_app/groups/new'
+      path: '/groups/new'
+      fullPath: '/groups/new'
+      preLoaderRoute: typeof AppGroupsNewRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/enrollment/new': {
       id: '/_app/enrollment/new'
       path: '/enrollment/new'
@@ -441,6 +472,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppOpsTierTokensNewRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/groups/$group-id/edit': {
+      id: '/_app/groups/$group-id/edit'
+      path: '/groups/$group-id/edit'
+      fullPath: '/groups/$group-id/edit'
+      preLoaderRoute: typeof AppGroupsGroupIdEditRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/devices/$device-id/edit': {
       id: '/_app/devices/$device-id/edit'
       path: '/devices/$device-id/edit'
@@ -454,6 +492,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppEnrollmentNewRoute: typeof AppEnrollmentNewRoute
+  AppGroupsNewRoute: typeof AppGroupsNewRoute
   AppPackagesNewRoute: typeof AppPackagesNewRoute
   AppRolloutsRolloutIdRoute: typeof AppRolloutsRolloutIdRoute
   AppRolloutsNewRoute: typeof AppRolloutsNewRoute
@@ -468,6 +507,7 @@ interface AppRouteChildren {
   AppRolloutsIndexRoute: typeof AppRolloutsIndexRoute
   AppSecretsIndexRoute: typeof AppSecretsIndexRoute
   AppDevicesDeviceIdEditRoute: typeof AppDevicesDeviceIdEditRoute
+  AppGroupsGroupIdEditRoute: typeof AppGroupsGroupIdEditRoute
   AppOpsTierTokensNewRoute: typeof AppOpsTierTokensNewRoute
   AppPackagesNameVersionRoute: typeof AppPackagesNameVersionRoute
   AppDevicesDeviceIdIndexRoute: typeof AppDevicesDeviceIdIndexRoute
@@ -476,6 +516,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppEnrollmentNewRoute: AppEnrollmentNewRoute,
+  AppGroupsNewRoute: AppGroupsNewRoute,
   AppPackagesNewRoute: AppPackagesNewRoute,
   AppRolloutsRolloutIdRoute: AppRolloutsRolloutIdRoute,
   AppRolloutsNewRoute: AppRolloutsNewRoute,
@@ -490,6 +531,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppRolloutsIndexRoute: AppRolloutsIndexRoute,
   AppSecretsIndexRoute: AppSecretsIndexRoute,
   AppDevicesDeviceIdEditRoute: AppDevicesDeviceIdEditRoute,
+  AppGroupsGroupIdEditRoute: AppGroupsGroupIdEditRoute,
   AppOpsTierTokensNewRoute: AppOpsTierTokensNewRoute,
   AppPackagesNameVersionRoute: AppPackagesNameVersionRoute,
   AppDevicesDeviceIdIndexRoute: AppDevicesDeviceIdIndexRoute,

@@ -651,8 +651,26 @@ async fn patch_assignment_rerenders_tag_change_does_not() {
     assert_eq!(status, StatusCode::OK);
     let v1 = manifest_version(&state, "dev-1").expect("rendered");
 
+    // Containment (§11.1): a site assignment is validated against the
+    // fleet->site tree, so the fleet + site must exist as groups first.
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO location_groups (kind, name, parent_id) VALUES ('fleet','north',NULL)",
+            [],
+        )
+        .unwrap();
+        let fid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO location_groups (kind, name, parent_id) VALUES ('site','plant-a',?1)",
+            params![fid],
+        )
+        .unwrap();
+    }
+
     // Assignment change => re-render. The response reflects the new site.
-    let (status, body) = patch_device(&app, "dev-1", json!({ "site": "plant-a" })).await;
+    let (status, body) =
+        patch_device(&app, "dev-1", json!({ "fleet": "north", "site": "plant-a" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["site"], "plant-a");
     let v2 = manifest_version(&state, "dev-1").expect("re-rendered");

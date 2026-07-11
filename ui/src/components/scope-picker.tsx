@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DeviceSummary, Scope } from '@/api/model'
+import type { ComboboxOption } from '@/components/search-select'
 import { SearchSelect } from '@/components/search-select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { deviceLabel } from '@/lib/scope'
+import { useLocationTree } from '@/lib/groups'
 
 /**
  * Segmented scope selector (§11.4): whole fleet, a Fleet, a Site, a
@@ -36,14 +38,35 @@ export function ScopePicker({
   const distinct = (get: (d: DeviceSummary) => string | null | undefined) =>
     [...new Set(devices.map(get).filter((v): v is string => !!v))].sort()
 
-  const nameOptions =
-    kind === 'fleet'
-      ? distinct((d) => d.fleet)
-      : kind === 'site'
-        ? distinct((d) => d.site)
-        : kind === 'type'
-          ? distinct((d) => d.type)
-          : []
+  // Canonical fleet/site groups (§11.1). Sites are listed grouped by their
+  // fleet so a scope-by-site name is unambiguous; both are unioned with any
+  // value a device already carries so legacy assignments stay selectable.
+  const { fleetNames, siteOptions } = useLocationTree()
+
+  const nameOptions: ComboboxOption[] = useMemo(() => {
+    const union = (
+      canonical: ComboboxOption[],
+      observed: string[],
+    ): ComboboxOption[] => {
+      const seen = new Set(canonical.map((o) => o.value))
+      const extra = observed
+        .filter((v) => !seen.has(v))
+        .map((v) => ({ value: v, label: v }))
+      return [...canonical, ...extra].sort((a, b) =>
+        a.value.localeCompare(b.value),
+      )
+    }
+    if (kind === 'fleet')
+      return union(
+        fleetNames.map((n) => ({ value: n, label: n })),
+        distinct((d) => d.fleet),
+      )
+    if (kind === 'site') return union(siteOptions, distinct((d) => d.site))
+    if (kind === 'type')
+      return distinct((d) => d.type).map((n) => ({ value: n, label: n }))
+    return []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, fleetNames, siteOptions, devices])
 
   const tagKeyOptions = useMemo(
     () => [...new Set(devices.flatMap((d) => Object.keys(d.tags)))].sort(),
@@ -131,7 +154,7 @@ export function ScopePicker({
             id="scope-name"
             value={name}
             onChange={setName}
-            options={nameOptions.map((o) => ({ value: o, label: o }))}
+            options={nameOptions}
             placeholder={`Select ${kind}…`}
             emptyText={`No ${kind} groups yet.`}
             clearable

@@ -594,6 +594,12 @@ pub async fn patch(
     let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut assignment_changed = false;
 
+    // Capture the assignment deltas before they are moved into the SET
+    // clause below — the containment check needs the RESULTING (fleet,
+    // site) (§11.1).
+    let fleet_set = body.fleet.clone();
+    let site_set = body.site.clone();
+
     if let Some(dn) = body.display_name {
         sets.push("display_name = ?");
         vals.push(Box::new(dn));
@@ -632,23 +638,53 @@ pub async fn patch(
     // render call — state.rs).
     {
         let conn = state.db.lock().expect("db mutex poisoned");
-        let exists: Option<i64> = match conn
+        // Load the current assignment so we can validate the RESULTING
+        // (fleet, site) — a fleet-only change must not leave a site
+        // stranded under a fleet it no longer belongs to (§11.1).
+        let current: Option<(Option<String>, Option<String>)> = match conn
             .query_row(
-                "SELECT 1 FROM devices WHERE device_id = ?1",
+                "SELECT fleet, site FROM devices WHERE device_id = ?1",
                 params![device_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
         {
             Ok(v) => v,
             Err(e) => return internal(e),
         };
-        if exists.is_none() {
+        let Some((cur_fleet, cur_site)) = current else {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({ "error": "unknown device" })),
             )
                 .into_response();
+        };
+        // Containment enforcement (§11.1/§11.3): when fleet or site is
+        // being set, the resulting site MUST exist under the resulting
+        // fleet. STRICT — the interactive path never free-adds a group;
+        // create new locations via POST /api/groups first (422 otherwise).
+        // Device-type is orthogonal and never validated here.
+        if fleet_set.is_some() || site_set.is_some() {
+            let new_fleet = match &fleet_set {
+                Some(v) => v.clone(),
+                None => cur_fleet,
+            };
+            let new_site = match &site_set {
+                Some(v) => v.clone(),
+                None => cur_site,
+            };
+            match crate::groups::validate_location(
+                &conn,
+                new_fleet.as_deref(),
+                new_site.as_deref(),
+            ) {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => {
+                    return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg })))
+                        .into_response();
+                }
+                Err(e) => return internal(e),
+            }
         }
         if !sets.is_empty() {
             let sql = format!(

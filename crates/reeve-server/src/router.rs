@@ -74,6 +74,18 @@ pub fn build(state: AppState) -> Router {
             "/api/devices/{device_id}/journal",
             get(crate::devices::journal),
         )
+        // Location groups (REV-010 amendment, spec/reeve/11-fleet-model.md
+        // §11.1/§11.3): the canonical fleet->site containment tree device
+        // assignments are validated against. Reads viewer+, writes
+        // operator+, enforced in the handlers.
+        .route(
+            "/api/groups",
+            get(crate::groups::list).post(crate::groups::create),
+        )
+        .route(
+            "/api/groups/{id}",
+            axum::routing::patch(crate::groups::rename).delete(crate::groups::delete),
+        )
         // Manual render kick (C4): re-render all devices at the current
         // head; operator+, enforced in the handler.
         .route("/api/render", post(render_kick))

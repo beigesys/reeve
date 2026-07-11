@@ -34,6 +34,25 @@ All devices        (base — the standard config every device gets)
   set) + its own device layer. Assignment comes from the device row
   (§11.3), never from tree content.
 
+**Fleet → Site is a containment tree; Device-type is orthogonal.**
+Fleet and Site are not independent free-text axes: a **Site belongs to
+exactly one Fleet**. The canonical set of Fleets and their Sites lives in
+the `location_groups` table (server DB) — a Fleet is a top-level group; a
+Site is a child group whose parent is a Fleet. A Site name is unique
+**within its Fleet** (the same Site name MAY recur under a different
+Fleet; they are distinct Sites). Device assignments are validated against
+this tree (§11.3): a device's Site MUST be one that exists under the
+device's Fleet — a "mixed" pair (a Site that belongs to a different Fleet)
+is rejected. **Device-type is NOT contained** — it stays an orthogonal
+free classification on the device row (`devices."type"`): a given type
+(e.g. `sensor`, `hmi`) may apply at any Site under any Fleet, so it is
+never nested under Site. **Tags** (§11.2) remain free and unconstrained.
+The merge chain itself is unchanged (fleet + site + type still merge by
+numeric prefix, D12) — containment governs the VALIDITY of an assignment,
+not the merge order. `devices.fleet`/`devices.site` (the name columns)
+remain the source of truth for the chain; `location_groups` is the
+canonical set they are checked against.
+
 ## 11.2 Tags
 
 Devices carry free-form key/value **tags**. Tags are for ad-hoc
@@ -49,7 +68,11 @@ the web UI (not just at enrollment):
 
 - **Assignment:** `fleet`, `site`, `type` — moving a device between
   groups. Changing any of these re-renders the device (its layer chain
-  changed) so its config updates.
+  changed) so its config updates. Fleet/site assignment is **validated
+  against the containment tree** (§11.1): the resulting Site MUST exist
+  under the resulting Fleet (a Site requires a Fleet; a Site under the
+  wrong Fleet, or a Fleet change that would strand the current Site, is a
+  422). `type` is orthogonal and never validated against the tree.
 - **Tags:** add/remove free-form key/value tags.
 - **Display name:** a human rename, distinct from the immutable
   `device_id`.
@@ -63,10 +86,38 @@ Wire:
 - `PATCH /api/devices/{id}` — partial update of
   `{displayName?, fleet?, site?, type?, pinned?, tags?}` (null clears an
   assignment). Human auth, operator+. Re-renders on assignment change.
+  Fleet/site are validated against the containment tree (§11.1); a
+  violation is 422. This path is **strict** — it does not free-add a
+  group; new locations are created explicitly via the group API below.
 - `POST /api/devices/{id}/decommission` — revoke + tombstone.
 - Enrollment MAY pre-assign: a join token carries optional
   `{fleet?, site?, type?, tags?}` applied to devices that enroll with
   it (agent.md D4), so a box lands in the right group at first contact.
+  Enrollment **auto-provisions** the token's Fleet and (Fleet-contained)
+  Site groups if absent — a device join never fails over a missing group
+  (Law 5) — but the Site is always created UNDER the token's Fleet, never
+  orphaned. A token Site with no Fleet cannot be contained and is left as
+  a free-text column only.
+
+**Location groups (the canonical fleet → site tree).** Managed
+independently of any single device:
+- `GET /api/groups` — the Fleet → Site tree
+  (`{fleets: [{id, name, sites: [{id, name}]}]}`). `?fleet=<name>`
+  (optionally `&kind=site`) scopes the read to one Fleet's children
+  (lazy drill-down), returning the same shape with only that Fleet.
+  Viewer+.
+- `POST /api/groups` `{kind: "fleet"|"site", name, parentId?}` — create a
+  Fleet (no parent) or a Site (`parentId` = an existing Fleet's id).
+  Operator+. Duplicate name (a Fleet globally, a Site within its Fleet) is
+  409; an invalid name, a Site without/with a bad parent, or a Fleet with
+  a parent is 422.
+- `PATCH /api/groups/{id}` `{name}` — rename. Operator+. Refused (409)
+  while the group is in use (a device references it, or — for a Fleet — it
+  still has child Sites): a live name is never changed out from under an
+  assignment; reassign first.
+- `DELETE /api/groups/{id}` — delete. Operator+. Refused (409) while in
+  use (same rule as rename) — refuse is safer than a cascade that would
+  orphan live assignments.
 
 ## 11.4 Deploy = intent, not layer editing
 

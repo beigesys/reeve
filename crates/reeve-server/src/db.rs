@@ -108,6 +108,18 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "fleet_model",
         sql: include_str!("migrations/V10__fleet_model.sql"),
     },
+    // Canonical location groups + fleet->site containment (REV-010
+    // amendment, spec/reeve/11-fleet-model.md §11.1/§11.3): a fleet->site
+    // containment tree (a site belongs to exactly one fleet), so device
+    // assignments can no longer mix a site with a fleet it doesn't belong
+    // to. Device-type stays an orthogonal free column. Backfills groups
+    // from existing devices.fleet/(fleet,site) so current assignments stay
+    // valid.
+    EmbeddedMigration {
+        version: 11,
+        name: "location_groups",
+        sql: include_str!("migrations/V11__location_groups.sql"),
+    },
 ];
 
 /// Open the server DB with the D6 pragmas. Idempotent.

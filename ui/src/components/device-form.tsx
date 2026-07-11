@@ -13,9 +13,11 @@ import type { DeviceDetail, PatchDeviceRequest } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SearchSelect } from '@/components/search-select'
+import { LocationFields } from '@/components/location-fields'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ConfirmButton } from '@/components/confirm-button'
+import { ensureLocationGroups } from '@/lib/groups'
 
 type Tags = Record<string, string>
 
@@ -142,6 +144,18 @@ export function DeviceForm({ device }: { device: DeviceDetail }) {
       backToDetail()
       return
     }
+    // Strict PATCH: the resulting (fleet, site) must already exist as
+    // canonical groups. Create them first if the operator typed new names.
+    if (body.fleet !== undefined || body.site !== undefined) {
+      const f = fleet.trim()
+      if (f) {
+        const groupErr = await ensureLocationGroups(f, site.trim(), qc)
+        if (groupErr) {
+          setError(groupErr)
+          return
+        }
+      }
+    }
     const res = await patch.mutateAsync({ deviceId: device.deviceId, data: body })
     if (res.status === 200) {
       invalidate()
@@ -192,21 +206,16 @@ export function DeviceForm({ device }: { device: DeviceDetail }) {
         </span>
       </div>
 
-      {/* Move between groups */}
+      {/* Move between groups. Fleet -> Site is a containment tree (the
+          site options come from the chosen fleet); device-type is an
+          orthogonal free classification. */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <MoveField
-          id="fleet"
-          label="Fleet"
-          value={fleet}
-          options={options.fleet}
-          onChange={setFleet}
-        />
-        <MoveField
-          id="site"
-          label="Site"
-          value={site}
-          options={options.site}
-          onChange={setSite}
+        <LocationFields
+          idPrefix="move"
+          fleet={fleet}
+          site={site}
+          onFleetChange={setFleet}
+          onSiteChange={setSite}
         />
         <MoveField
           id="type"
@@ -217,7 +226,9 @@ export function DeviceForm({ device }: { device: DeviceDetail }) {
         />
       </div>
       <span className="-mt-4 text-xs text-muted-foreground">
-        Moving a device updates the configuration it receives.
+        A site belongs to a fleet — pick the fleet first, then one of its
+        sites (or add a new one). Moving a device updates the configuration
+        it receives.
       </span>
 
       {/* Tags */}
