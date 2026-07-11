@@ -3,10 +3,7 @@ import { cn } from '@/lib/utils'
 import { fmtAgo } from '@/lib/format'
 import type { PresenceInfo } from '@/api/model'
 
-/**
- * online/offline pill with "since" (spec/reeve/02-channel.md §4.3
- * vocabulary as surfaced by GET /api/devices).
- */
+/** online/offline pill with "since", as surfaced by GET /api/devices. */
 export function PresenceBadge({ presence }: { presence: PresenceInfo }) {
   const online = presence.state === 'online'
   return (

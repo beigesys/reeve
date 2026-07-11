@@ -1,10 +1,8 @@
-// Remote terminal, UI leg (spec/reeve/03-terminal.md §5; CLAUDE.md
-// guardrails): sessions are short-lived and explicitly initiated —
-// connect happens on click, never automatically, and a dropped
-// session is NOT auto-reopened (§5.3: reconnection is a new session).
+// Remote terminal, UI leg: sessions are short-lived and explicitly
+// initiated — connect happens on click, never automatically, and a
+// dropped session is NOT auto-reopened (reconnection is a new session).
 //
-// Wire framing (crates/reeve-types src/reeve/terminal.rs — the
-// agent-owned in-band encoding the bridge relays opaquely, §5.5):
+// Wire framing (agent-owned in-band encoding the bridge relays opaquely):
 //   byte 0 = 0x00 -> raw terminal bytes (both directions)
 //   byte 0 = 0x01 -> resize, body u16 BE cols + u16 BE rows (UI->agent)
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -44,7 +42,7 @@ export function DeviceTerminal({
 }: {
   deviceId: string
   online: boolean
-  /** Whether the current identity acts as operator+ (§5.6). */
+  /** Whether the current identity acts as operator or higher. */
   operator: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -60,13 +58,13 @@ export function DeviceTerminal({
     termRef.current = null
   }, [])
 
-  // Component unmount ends the session (§5.3: no background sessions).
+  // Component unmount ends the session; no background sessions.
   useEffect(() => teardown, [teardown])
 
   const connect = useCallback(() => {
     const container = containerRef.current
     if (!container || wsRef.current) return
-    // A fresh connect is a NEW session (§5.3); drop any finished
+    // A fresh connect is a NEW session; drop any finished
     // terminal still showing the previous session's output.
     termRef.current?.dispose()
     termRef.current = null
@@ -84,7 +82,7 @@ export function DeviceTerminal({
     fit.fit()
     termRef.current = term
 
-    // Generated URL builder (D10) — then swapped to the ws scheme.
+    // Generated URL builder — then swapped to the ws scheme.
     const url = new URL(
       getTerminalRouteUrl(deviceId, {
         cols: term.cols,

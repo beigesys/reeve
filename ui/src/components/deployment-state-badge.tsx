@@ -2,10 +2,8 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 /**
- * Margo deployment state pill (`pending` … `failed`;
- * margo `DeploymentStatusManifest.status.state`). The server surfaces
- * the state as a plain string, so unknown values render neutrally
- * (tolerant reader).
+ * Deployment state pill (`pending` … `failed`). The server surfaces the
+ * state as a plain string, so unknown values render neutrally.
  */
 export function DeploymentStateBadge({ state }: { state: string }) {
   const tone =
