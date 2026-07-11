@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DeviceSummary, Scope } from '@/api/model'
+import { SearchSelect } from '@/components/search-select'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -125,19 +127,16 @@ export function ScopePicker({
                 ? 'Site name'
                 : 'Device type'}
           </Label>
-          <Input
+          <SearchSelect
             id="scope-name"
-            list="scope-name-options"
-            placeholder={`${kind} name`}
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={setName}
+            options={nameOptions.map((o) => ({ value: o, label: o }))}
+            placeholder={`Select ${kind}…`}
+            emptyText={`No ${kind} groups yet.`}
+            clearable
             className="max-w-72"
           />
-          <datalist id="scope-name-options">
-            {nameOptions.map((o) => (
-              <option key={o} value={o} />
-            ))}
-          </datalist>
         </div>
       )}
 
@@ -188,21 +187,22 @@ export function ScopePicker({
               </p>
             ) : (
               filtered.map((d) => (
-                <label
+                <button
+                  type="button"
                   key={d.deviceId}
-                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-accent"
+                  onClick={() => toggle(d.deviceId)}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent"
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={picked.includes(d.deviceId)}
-                    onChange={() => toggle(d.deviceId)}
-                    className="accent-primary"
+                    tabIndex={-1}
+                    className="pointer-events-none"
                   />
                   <span>{deviceLabel(d)}</span>
                   <span className="font-mono text-xs text-muted-foreground">
                     {d.deviceId}
                   </span>
-                </label>
+                </button>
               ))
             )}
           </div>

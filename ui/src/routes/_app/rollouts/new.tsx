@@ -11,6 +11,8 @@ import type { GateSpec, Scope } from '@/api/model'
 import { devicesInScope, scopeLabel } from '@/lib/scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { SearchSelect } from '@/components/search-select'
 import {
   Card,
   CardContent,
@@ -190,20 +192,15 @@ function RolloutCreatePage() {
                 </SelectContent>
               </Select>
               {needsName && (
-                <>
-                  <Input
-                    list="scope-name-options"
-                    placeholder={`${scopeKind} name`}
-                    value={scopeName}
-                    onChange={(e) => setScopeName(e.target.value)}
-                    className="w-56"
-                  />
-                  <datalist id="scope-name-options">
-                    {nameOptions.map((o) => (
-                      <option key={o} value={o} />
-                    ))}
-                  </datalist>
-                </>
+                <SearchSelect
+                  value={scopeName}
+                  onChange={setScopeName}
+                  options={nameOptions.map((o) => ({ value: o, label: o }))}
+                  placeholder={`Select ${scopeKind}…`}
+                  emptyText={`No ${scopeKind} groups yet.`}
+                  clearable
+                  className="w-56"
+                />
               )}
             </div>
 
@@ -223,21 +220,22 @@ function RolloutCreatePage() {
                     </p>
                   ) : (
                     filteredDevices.map((d) => (
-                      <label
+                      <button
+                        type="button"
                         key={d.deviceId}
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-accent"
+                        onClick={() => toggleDevice(d.deviceId)}
+                        className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent"
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={pickedDevices.includes(d.deviceId)}
-                          onChange={() => toggleDevice(d.deviceId)}
-                          className="accent-primary"
+                          tabIndex={-1}
+                          className="pointer-events-none"
                         />
                         <span>{d.displayName ?? d.hostname}</span>
                         <span className="font-mono text-xs text-muted-foreground">
                           {d.deviceId}
                         </span>
-                      </label>
+                      </button>
                     ))
                   )}
                 </div>

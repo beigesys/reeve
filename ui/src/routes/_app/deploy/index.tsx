@@ -10,6 +10,7 @@ import { getHistoryListQueryKey } from '@/api/endpoints/history/history'
 import type { DeviceSummary, Scope, StackRef } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { SearchSelect } from '@/components/search-select'
 import {
   Card,
   CardContent,
@@ -216,31 +217,17 @@ function DeployPage() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <Label>Package</Label>
-                <Select
+                <SearchSelect
                   value={pkg}
-                  onValueChange={(v) => {
+                  onChange={(v) => {
                     setPkg(v)
                     setVersion('')
                     setProfile('')
                   }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a package…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {packageNames.length === 0 ? (
-                      <SelectItem value="__none__" disabled>
-                        No packages uploaded yet
-                      </SelectItem>
-                    ) : (
-                      packageNames.map((n) => (
-                        <SelectItem key={n} value={n}>
-                          {n}
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
+                  options={packageNames.map((n) => ({ value: n, label: n }))}
+                  placeholder="Choose a package…"
+                  emptyText="No packages uploaded yet."
+                />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Version</Label>
@@ -265,18 +252,16 @@ function DeployPage() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="profile">Profile (optional)</Label>
-                <Input
+                <SearchSelect
                   id="profile"
-                  list="profile-options"
-                  placeholder="package default"
                   value={profile}
-                  onChange={(e) => setProfile(e.target.value)}
+                  onChange={setProfile}
+                  options={profiles.map((p) => ({ value: p, label: p }))}
+                  placeholder="package default"
+                  emptyText="Type a profile id."
+                  creatable
+                  clearable
                 />
-                <datalist id="profile-options">
-                  {profiles.map((p) => (
-                    <option key={p} value={p} />
-                  ))}
-                </datalist>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="app-name">App name (optional)</Label>

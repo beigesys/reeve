@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { getListSecretsQueryKey, usePutRoute } from '@/api/endpoints/secrets/secrets'
+import { useList } from '@/api/endpoints/devices/devices'
 import { Button } from '@/components/ui/button'
+import { SearchSelect } from '@/components/search-select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -43,6 +45,8 @@ export function SecretForm({
 }) {
   const qc = useQueryClient()
   const put = usePutRoute()
+  const devices = useList()
+  const deviceRows = devices.data?.status === 200 ? devices.data.data : []
 
   const initial = useMemo(() => splitScope(initialScope), [initialScope])
   const [name, setName] = useState(initialName)
@@ -52,6 +56,27 @@ export function SecretForm({
   const [showValue, setShowValue] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+
+  // Existing group names to suggest for the qualifier, by scope kind.
+  // class/region aren't device columns, so those are pure free-add.
+  const qualifierOptions = useMemo(() => {
+    const uniq = (xs: (string | null | undefined)[]) =>
+      [...new Set(xs.filter((v): v is string => !!v))].sort()
+    switch (kind) {
+      case 'site':
+        return uniq(deviceRows.map((d) => d.site)).map((v) => ({
+          value: v,
+          label: v,
+        }))
+      case 'device':
+        return deviceRows.map((d) => ({
+          value: d.deviceId,
+          label: `${d.hostname} (${d.deviceId})`,
+        }))
+      default:
+        return []
+    }
+  }, [kind, deviceRows])
 
   const scope = kind === 'fleet' ? 'fleet' : `${kind}.${qualifier.trim()}`
   const valid =
@@ -112,11 +137,15 @@ export function SecretForm({
             </SelectContent>
           </Select>
           {kind !== 'fleet' && (
-            <Input
+            <SearchSelect
               value={qualifier}
-              onChange={(e) => setQualifier(e.target.value)}
-              placeholder={kind === 'device' ? '<device id>' : `<${kind} name>`}
-              className="font-mono"
+              onChange={setQualifier}
+              options={qualifierOptions}
+              placeholder={kind === 'device' ? 'Select device…' : `Select ${kind}…`}
+              emptyText="Type to use a new name."
+              creatable
+              clearable
+              className="flex-1 font-mono"
             />
           )}
         </div>

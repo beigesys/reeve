@@ -12,6 +12,7 @@ import {
 import type { DeviceDetail, PatchDeviceRequest } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { SearchSelect } from '@/components/search-select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ConfirmButton } from '@/components/confirm-button'
@@ -41,8 +42,8 @@ function useGroupOptions() {
 }
 
 /**
- * A group-assignment field: pick an existing group name or type a new
- * one (native datalist = suggestions + free add, no bespoke combobox).
+ * A group-assignment field: pick an existing group name or type a new one
+ * (searchable, creatable — official shadcn/ui Combobox via SearchSelect).
  */
 function MoveField({
   id,
@@ -57,22 +58,19 @@ function MoveField({
   options: string[]
   onChange: (v: string) => void
 }) {
-  const listId = `${id}-options`
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <Input
+      <SearchSelect
         id={id}
-        list={listId}
         value={value}
+        onChange={onChange}
+        options={options.map((o) => ({ value: o, label: o }))}
         placeholder="Unassigned"
-        onChange={(e) => onChange(e.target.value)}
+        emptyText="Type to add a new one."
+        creatable
+        clearable
       />
-      <datalist id={listId}>
-        {options.map((o) => (
-          <option key={o} value={o} />
-        ))}
-      </datalist>
     </div>
   )
 }

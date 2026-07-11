@@ -10,6 +10,7 @@ import {
 import type { CreatedJoinToken } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { SearchSelect } from '@/components/search-select'
 import {
   Card,
   CardContent,
@@ -218,18 +219,16 @@ function JoinTokenCreatePage() {
                 ).map(([label, value, setter, get], i) => (
                   <div key={label} className="flex flex-col gap-1.5">
                     <Label htmlFor={`assign-${i}`}>{label}</Label>
-                    <Input
+                    <SearchSelect
                       id={`assign-${i}`}
-                      list={`assign-${i}-options`}
                       value={value}
-                      onChange={(e) => setter(e.target.value)}
+                      onChange={setter}
+                      options={distinct(get).map((o) => ({ value: o, label: o }))}
                       placeholder="none"
+                      emptyText="Type to add a new one."
+                      creatable
+                      clearable
                     />
-                    <datalist id={`assign-${i}-options`}>
-                      {distinct(get).map((o) => (
-                        <option key={o} value={o} />
-                      ))}
-                    </datalist>
                   </div>
                 ))}
               </div>
