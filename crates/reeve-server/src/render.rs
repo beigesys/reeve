@@ -112,28 +112,56 @@ pub struct RenderReport {
 
 /// One device row's render-relevant fields (tree-render.md D11: layer
 /// chain membership comes from the device row, not tree content).
+///
+/// The hierarchy taxonomy is REV-010 (spec/reeve/11-fleet-model.md
+/// §11.1): all -> fleet -> site -> type -> device. `class`/`region` are
+/// retained columns (V2) that no longer feed the config chain; they are
+/// read only for the ext-secrets scope chain, which keeps its own
+/// (unchanged) taxonomy.
 struct DeviceRow {
     device_id: String,
-    class: Option<String>,
-    region: Option<String>,
+    fleet: Option<String>,
     site: Option<String>,
+    r#type: Option<String>,
+    // Retained for the ext-secrets scope chain only (device_chain);
+    // dormant in the config layer chain after the REV-010 remap.
+    #[cfg_attr(not(feature = "ext-secrets"), allow(dead_code))]
+    class: Option<String>,
+    #[cfg_attr(not(feature = "ext-secrets"), allow(dead_code))]
+    region: Option<String>,
 }
 
+/// Columns every device query in this module reads, in the order
+/// [`DeviceRow::from_row`] expects.
+const DEVICE_RENDER_COLUMNS: &str = "device_id, fleet, site, \"type\", class, region";
+
 impl DeviceRow {
-    /// fleet -> class? -> region? -> site? -> device (D11/D12). The
-    /// numeric prefixes make D3's merge order lexically sortable.
+    fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
+        Ok(DeviceRow {
+            device_id: r.get(0)?,
+            fleet: r.get(1)?,
+            site: r.get(2)?,
+            r#type: r.get(3)?,
+            class: r.get(4)?,
+            region: r.get(5)?,
+        })
+    }
+
+    /// all -> fleet? -> site? -> type? -> device (REV-010 §11.1;
+    /// D11/D12). The numeric prefixes make D3's merge order lexically
+    /// sortable; the engine sees only opaque `NN-<label>` names.
     fn layer_chain(&self) -> Vec<String> {
-        let mut chain = vec!["00-fleet".to_string()];
-        if let Some(c) = &self.class {
-            chain.push(format!("05-class.{c}"));
-        }
-        if let Some(r) = &self.region {
-            chain.push(format!("10-region.{r}"));
+        let mut chain = vec!["00-all".to_string()];
+        if let Some(f) = &self.fleet {
+            chain.push(format!("10-fleet.{f}"));
         }
         if let Some(s) = &self.site {
             chain.push(format!("20-site.{s}"));
         }
-        chain.push(format!("30-device.{}", self.device_id));
+        if let Some(t) = &self.r#type {
+            chain.push(format!("30-type.{t}"));
+        }
+        chain.push(format!("40-device.{}", self.device_id));
         chain
     }
 }
@@ -505,17 +533,12 @@ fn render_one(
 /// served desired state here (§8.6: an agent has exactly one server).
 fn device_row(conn: &Connection, device_id: &str) -> Result<Option<DeviceRow>, rusqlite::Error> {
     conn.query_row(
-        "SELECT device_id, class, region, site FROM devices
-         WHERE device_id = ?1 AND tier_origin IS NULL",
+        &format!(
+            "SELECT {DEVICE_RENDER_COLUMNS} FROM devices
+             WHERE device_id = ?1 AND tier_origin IS NULL AND decommissioned_at IS NULL"
+        ),
         params![device_id],
-        |r| {
-            Ok(DeviceRow {
-                device_id: r.get(0)?,
-                class: r.get(1)?,
-                region: r.get(2)?,
-                site: r.get(3)?,
-            })
-        },
+        DeviceRow::from_row,
     )
     .optional()
 }
@@ -540,6 +563,44 @@ fn all_targets(conn: &Connection) -> Result<BTreeMap<String, RevisionId>, rusqli
     let mut stmt = conn.prepare("SELECT device_id, revision FROM device_render_targets")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
+}
+
+/// Pinned devices holding at their current rendered revision
+/// (spec/reeve/11-fleet-model.md §11.3). Only devices with a rendered
+/// manifest can hold — a pinned-but-never-rendered device falls through
+/// to head (nothing to hold at). Locally-enrolled, non-tombstoned only.
+fn pinned_holds(conn: &Connection) -> Result<BTreeMap<String, RevisionId>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT d.device_id, m.rendered_revision
+         FROM devices d JOIN device_manifests m ON m.device_id = d.device_id
+         WHERE d.pinned = 1 AND d.tier_origin IS NULL AND d.decommissioned_at IS NULL",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// The revision one device renders against right now: a §11.3 pin hold
+/// (if pinned with a rendered manifest) wins over any rollout render
+/// target, which wins over the local head. Keeps [`ensure_current`] in
+/// lockstep with [`render_all`]'s folded target map.
+fn effective_revision(
+    conn: &Connection,
+    device_id: &str,
+    head: RevisionId,
+) -> Result<RevisionId, rusqlite::Error> {
+    let hold: Option<RevisionId> = conn
+        .query_row(
+            "SELECT m.rendered_revision
+             FROM devices d JOIN device_manifests m ON m.device_id = d.device_id
+             WHERE d.device_id = ?1 AND d.pinned = 1",
+            params![device_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(rev) = hold {
+        return Ok(rev);
+    }
+    Ok(device_target(conn, device_id)?.unwrap_or(head))
 }
 
 /// Load one revision's full tree under the revisions lock. Revision 0
@@ -612,7 +673,17 @@ pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
     // ensure_current, and the device's next poll self-corrects anyway.
     let targets = {
         let conn = state.db.lock().expect("db mutex poisoned");
-        all_targets(&conn)?
+        let mut targets = all_targets(&conn)?;
+        // §11.3 pin holds: a pinned device holds its manifest at its
+        // current rendered revision, overriding both any rollout target
+        // and the local head (it is excluded from new deploys/rollouts
+        // until unpinned). Folding the holds into the target map here
+        // makes snapshot_trees preload their trees and the render loop
+        // treat them uniformly.
+        for (device_id, revision) in pinned_holds(&conn)? {
+            targets.insert(device_id, revision);
+        }
+        targets
     };
     let (head, upstream, trees) = snapshot_trees(state, &targets)?;
 
@@ -620,18 +691,13 @@ pub fn render_all(state: &AppState) -> Result<RenderReport, PipelineError> {
     let epoch = server_epoch(&conn)?;
     let devices: Vec<DeviceRow> = {
         // tier_origin IS NULL: forwarded devices are status-only here
-        // (federation §8.3/§8.6) — see device_row.
-        let mut stmt =
-            conn.prepare("SELECT device_id, class, region, site FROM devices
-                          WHERE tier_origin IS NULL ORDER BY device_id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(DeviceRow {
-                device_id: r.get(0)?,
-                class: r.get(1)?,
-                region: r.get(2)?,
-                site: r.get(3)?,
-            })
-        })?;
+        // (federation §8.3/§8.6) — see device_row. decommissioned_at IS
+        // NULL: a tombstoned device (§11.3) is never rendered again.
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {DEVICE_RENDER_COLUMNS} FROM devices
+             WHERE tier_origin IS NULL AND decommissioned_at IS NULL ORDER BY device_id"
+        ))?;
+        let rows = stmt.query_map([], DeviceRow::from_row)?;
         rows.collect::<Result<_, _>>()?
     };
 
@@ -726,7 +792,7 @@ pub fn ensure_current(state: &AppState, device_id: &str) -> Result<Outcome, Pipe
     let upstream_row = upstream.map(|(row, _)| row);
     let effective = {
         let conn = state.db.lock().expect("db mutex poisoned");
-        let effective = device_target(&conn, device_id)?.unwrap_or(head);
+        let effective = effective_revision(&conn, device_id, head)?;
         let at: Option<(i64, Option<i64>)> = conn
             .query_row(
                 "SELECT rendered_revision, rendered_upstream
@@ -940,6 +1006,56 @@ mod tests {
         let a = files(&[("apps/ab", "c")]);
         let b = files(&[("apps/a", "bc")]);
         assert_ne!(content_digest(&a), content_digest(&b));
+    }
+
+    /// REV-010 §11.1 taxonomy: a device chain is
+    /// 00-all + assigned fleet/site/type + 40-device.<id>, each optional
+    /// level absent when unset (D12).
+    #[test]
+    fn layer_chain_follows_rev010_taxonomy() {
+        let full = DeviceRow {
+            device_id: "dev-1".into(),
+            fleet: Some("north".into()),
+            site: Some("plant-a".into()),
+            r#type: Some("hmi".into()),
+            class: None,
+            region: None,
+        };
+        assert_eq!(
+            full.layer_chain(),
+            vec![
+                "00-all",
+                "10-fleet.north",
+                "20-site.plant-a",
+                "30-type.hmi",
+                "40-device.dev-1",
+            ]
+        );
+
+        // Unassigned levels drop out; the base and device layers remain.
+        let bare = DeviceRow {
+            device_id: "dev-2".into(),
+            fleet: None,
+            site: None,
+            r#type: None,
+            class: None,
+            region: None,
+        };
+        assert_eq!(bare.layer_chain(), vec!["00-all", "40-device.dev-2"]);
+
+        // A site-only device: base + site + device.
+        let site_only = DeviceRow {
+            device_id: "dev-3".into(),
+            fleet: None,
+            site: Some("plant-b".into()),
+            r#type: None,
+            class: None,
+            region: None,
+        };
+        assert_eq!(
+            site_only.layer_chain(),
+            vec!["00-all", "20-site.plant-b", "40-device.dev-3"]
+        );
     }
 
     #[test]

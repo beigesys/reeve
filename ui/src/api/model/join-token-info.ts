@@ -5,6 +5,7 @@
  * Fleet desired-state manager (Margo-inspired). Human API consumed by the reeve UI, plus the device-facing wire surface.
  * OpenAPI spec version: 0.1.0
  */
+import type { JoinTokenInfoTags } from './join-token-info-tags';
 
 /**
  * One join token row, as listed to operators (never the raw token).
@@ -18,9 +19,22 @@ export interface JoinTokenInfo {
      */
   device_id?: string | null;
   expires_at: number;
+  /**
+     * Enrollment pre-assignment applied to the device that enrolls with
+     * this token (spec/reeve/11-fleet-model.md §11.3): hierarchy tiers
+     * and free-form tags.
+     * @nullable
+     */
+  fleet?: string | null;
   max_uses: number;
   /** @nullable */
   revoked_at?: number | null;
+  /** @nullable */
+  site?: string | null;
+  /** @nullable */
+  tags?: JoinTokenInfoTags;
   token_hash: string;
+  /** @nullable */
+  type?: string | null;
   uses: number;
 }

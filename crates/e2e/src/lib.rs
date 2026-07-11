@@ -60,11 +60,13 @@ pub fn config_disabled(data_dir: &Path) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None,
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: DurabilityConfig::disabled(),
         zot: None,
         federation: None,
         install_open: false,
+        admin_seed: None,
     }
 }
 
@@ -277,7 +279,7 @@ services:
     author.put_package("web", "1.0.0", &[("margo.yaml", MANIFEST), ("compose.yml", COMPOSE)]).await;
     author
         .put_layer(
-            "00-fleet",
+            "00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         )
         .await;

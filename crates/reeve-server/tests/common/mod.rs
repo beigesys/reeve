@@ -27,6 +27,7 @@ pub fn config(data_dir: &FsPath, auth: AuthMode) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth,
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,

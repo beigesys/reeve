@@ -40,21 +40,29 @@ function TreePage() {
   return (
     <div className="flex flex-col gap-4 p-6">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold tracking-tight">Tree</h1>
+        <div className="flex flex-col gap-0.5">
+          <h1 className="text-xl font-semibold tracking-tight">
+            Advanced configuration
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Raw config editor. Most changes are simpler through Deploy and
+            Rollouts — use this only when you need direct file access.
+          </p>
+        </div>
         <Button variant="outline" size="sm" asChild>
           <Link to="/tree/revisions">
             <History className="size-4" />
-            Revision history
+            Change log
           </Link>
         </Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Head</CardTitle>
+          <CardTitle className="text-base">Current</CardTitle>
           <CardDescription>
-            The tree the next render sees: configuration synced from upstream,
-            with this tier's own edits layered on top.
+            The configuration the next update builds from: config synced from
+            upstream, with this server's own edits on top.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -92,22 +100,21 @@ function TreePage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Layers</CardTitle>
+          <CardTitle className="text-base">Config groups</CardTitle>
           <CardDescription>
-            Configuration layers at head, applied from fleet-wide down to a
-            single device — the more specific layer wins. Layers range from{' '}
-            <code>fleet</code> and <code>class</code> through{' '}
-            <code>region</code>, <code>site</code>, and individual{' '}
-            <code>device</code>.
+            Configuration applied from fleet-wide down to a single device —
+            the more specific group wins. Groups range from all devices and{' '}
+            <code>fleet</code> through <code>site</code>,{' '}
+            <code>device-type</code>, and an individual <code>device</code>.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Layer</TableHead>
+                <TableHead>Group</TableHead>
                 <TableHead>Files</TableHead>
-                <TableHead>Streams</TableHead>
+                <TableHead>Source</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -182,14 +189,14 @@ function TreePage() {
             }}
           >
             <Input
-              placeholder="New layer, e.g. 20-site.plant-a"
+              placeholder="New group, e.g. 20-site.plant-a"
               value={newLayer}
               onChange={(e) => setNewLayer(e.target.value)}
               className="max-w-72 font-mono"
             />
             <Button type="submit" variant="outline" size="sm" disabled={!newLayerValid}>
               <Plus className="size-4" />
-              New layer
+              New group
             </Button>
             {newLayer && !newLayerValid && (
               <span className="text-xs text-muted-foreground">

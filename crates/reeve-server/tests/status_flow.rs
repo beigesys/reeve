@@ -28,6 +28,7 @@ fn config(data_dir: &FsPath) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None,
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,

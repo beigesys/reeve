@@ -5,6 +5,7 @@
  * Fleet desired-state manager (Margo-inspired). Human API consumed by the reeve UI, plus the device-facing wire surface.
  * OpenAPI spec version: 0.1.0
  */
+import type { CreateJoinTokenRequestTags } from './create-join-token-request-tags';
 
 export interface CreateJoinTokenRequest {
   /**
@@ -13,13 +14,26 @@ export interface CreateJoinTokenRequest {
      */
   device_id?: string | null;
   /**
+     * Optional enrollment pre-assignment (§11.3): the group the
+     * enrolling device lands in and the tags it carries at first
+     * contact.
+     * @nullable
+     */
+  fleet?: string | null;
+  /**
      * Default 1 (D4).
      * @nullable
      */
   max_uses?: number | null;
+  /** @nullable */
+  site?: string | null;
+  /** @nullable */
+  tags?: CreateJoinTokenRequestTags;
   /**
      * Seconds until expiry; default 86400 (24h, D4).
      * @nullable
      */
   ttl_secs?: number | null;
+  /** @nullable */
+  type?: string | null;
 }

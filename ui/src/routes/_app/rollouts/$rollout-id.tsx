@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { useMe } from '@/api/endpoints/auth/auth'
@@ -9,6 +9,7 @@ import {
   useAbortRoute,
   usePauseRoute,
   useResumeRoute,
+  useRollbackRoute,
   useRolloutStatus,
 } from '@/api/endpoints/rollouts/rollouts'
 import type { WaveStatus } from '@/api/model'
@@ -127,6 +128,7 @@ function RolloutDetailPage() {
   const params = Route.useParams()
   const rolloutId = params['rollout-id']
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const refetchInterval = usePollInterval(10_000)
   const status = useRolloutStatus(rolloutId, { query: { refetchInterval } })
   const me = useMe()
@@ -134,6 +136,7 @@ function RolloutDetailPage() {
   const pause = usePauseRoute()
   const resume = useResumeRoute()
   const abort = useAbortRoute()
+  const rollback = useRollbackRoute()
 
   const rollout = status.data?.status === 200 ? status.data.data : undefined
   const role = me.data?.status === 200 ? me.data.data.effectiveRole : undefined
@@ -143,7 +146,24 @@ function RolloutDetailPage() {
     void qc.invalidateQueries({ queryKey: getRolloutStatusQueryKey(rolloutId) })
     void qc.invalidateQueries({ queryKey: getListRolloutsQueryKey() })
   }
-  const acting = pause.isPending || resume.isPending || abort.isPending
+  const acting =
+    pause.isPending || resume.isPending || abort.isPending || rollback.isPending
+
+  const doRollback = async () => {
+    const res = await rollback.mutateAsync({ rolloutId })
+    if (res.status === 201) {
+      invalidate()
+      void navigate({
+        to: '/rollouts/$rollout-id',
+        params: { 'rollout-id': res.data.rolloutId },
+      })
+    }
+  }
+
+  const cohortDescription =
+    rollout && typeof rollout.cohort.description === 'string'
+      ? rollout.cohort.description
+      : (rollout?.scopeDescription ?? '')
 
   return (
     <div className="flex flex-col gap-4 p-6">
@@ -188,11 +208,24 @@ function RolloutDetailPage() {
               <ConfirmButton
                 label="Abort"
                 confirmLabel="Abort rollout?"
+                description="Stops advancing devices. Devices already updated keep the new config."
                 disabled={acting}
                 onConfirm={() =>
                   abort.mutate({ rolloutId }, { onSuccess: invalidate })
                 }
               />
+            )}
+            <ConfirmButton
+              label="Undo this rollout"
+              confirmLabel="Undo this rollout?"
+              description="Returns the affected devices to the configuration they had before this rollout, in a new single-wave rollout."
+              disabled={acting}
+              onConfirm={() => void doRollback()}
+            />
+            {rollback.data && rollback.data.status !== 201 && (
+              <span className="text-sm text-destructive">
+                Nothing to undo.
+              </span>
             )}
           </span>
         )}
@@ -215,15 +248,7 @@ function RolloutDetailPage() {
               <CardTitle className="text-base">Rollout</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <Field label="Target revision">
-                <Link
-                  to="/tree/revisions/$revision-id"
-                  params={{ 'revision-id': String(rollout.revision) }}
-                  className="font-mono underline-offset-4 hover:underline"
-                >
-                  r{rollout.revision}
-                </Link>
-              </Field>
+              <Field label="Rolling out to">{rollout.scopeDescription}</Field>
               <Field label="Created">
                 {fmtUnix(rollout.createdAt)} by {rollout.createdBy}
               </Field>
@@ -242,11 +267,7 @@ function RolloutDetailPage() {
                 {rollout.gate.undeterminedAllowance ?? 'unlimited'}
               </Field>
               <Field label="Failure threshold">{rollout.failureThreshold}</Field>
-              <Field label="Cohort spec">
-                <pre className="overflow-x-auto rounded bg-muted p-1.5 font-mono text-xs">
-                  {JSON.stringify(rollout.cohort)}
-                </pre>
-              </Field>
+              <Field label="Cohort">{cohortDescription}</Field>
             </CardContent>
           </Card>
 

@@ -45,9 +45,17 @@ use utoipa::OpenApi;
         crate::tree::file_at,
         crate::tree::diff,
         crate::tree::blame,
-        // devices (Track D)
+        // deploy-to-scope + history/undo (REV-010 §11.4/§11.5)
+        crate::deploy::deploy,
+        crate::deploy::undeploy,
+        crate::history::list,
+        crate::history::detail,
+        crate::history::undo,
+        // devices (Track D + REV-010 §11.3 management writes)
         crate::devices::list,
         crate::devices::detail,
+        crate::devices::patch,
+        crate::devices::decommission,
         crate::devices::journal,
         // render kick (C4) + durability (C6) + healthz
         crate::router::render_kick,
@@ -79,6 +87,8 @@ use utoipa::OpenApi;
         (name = "auth", description = "Login, logout, first-boot setup, whoami"),
         (name = "join-tokens", description = "Device enrollment join tokens (operator surface)"),
         (name = "tree", description = "Layered deployment tree: authoring, history, diff, blame, render"),
+        (name = "deploy", description = "Deploy/undeploy a stack to a scope (spec/reeve/11-fleet-model.md §11.4)"),
+        (name = "history", description = "Change history and Undo (spec/reeve/11-fleet-model.md §11.5)"),
         (name = "devices", description = "Device fleet: presence, deployment states, render provenance, journal"),
         (name = "durability", description = "Durability tier status (spec/reeve/07-durability.md)"),
         (name = "secrets", description = "Write-only secrets vault metadata (spec/reeve/10-secrets.md)"),
@@ -111,6 +121,7 @@ struct SecretsApi;
     crate::ext::rollouts::pause_route,
     crate::ext::rollouts::resume_route,
     crate::ext::rollouts::abort_route,
+    crate::ext::rollouts::rollback_route,
 ))]
 struct RolloutsApi;
 

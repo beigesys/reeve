@@ -22,7 +22,7 @@ import type {
 
 import type {
   HealthzResponse,
-  ServerCapabilities
+  ServerInfo
 } from '../../model';
 
 
@@ -45,7 +45,7 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
 };
 
 export type serverInfoResponse200 = {
-  data: ServerCapabilities
+  data: ServerInfo
   status: 200
 }
 
@@ -78,8 +78,8 @@ export const getServerInfoUrl = () => {
 
 /**
  * @summary GET /api/server — server version + compiled-in extension
-advertisement for the ops UI. Human (session) leg of the
-device-auth'd /api/reeve/v1/capabilities; viewer+.
+advertisement + declared tier for the ops UI. Human (session) leg of
+the device-auth'd /api/reeve/v1/capabilities; viewer+.
  */
 export const serverInfo = async ( options?: RequestInit): Promise<serverInfoResponse> => {
 
@@ -158,8 +158,8 @@ export function useServerInfo<TData = Awaited<ReturnType<typeof serverInfo>>, TE
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
  * @summary GET /api/server — server version + compiled-in extension
-advertisement for the ops UI. Human (session) leg of the
-device-auth'd /api/reeve/v1/capabilities; viewer+.
+advertisement + declared tier for the ops UI. Human (session) leg of
+the device-auth'd /api/reeve/v1/capabilities; viewer+.
  */
 
 export function useServerInfo<TData = Awaited<ReturnType<typeof serverInfo>>, TError = void>(

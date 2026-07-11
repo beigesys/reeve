@@ -7,6 +7,6 @@
  */
 
 /**
- * All pairs must match the device's free-form labels.
+ * @nullable
  */
-export type CohortSpecLabels = {[key: string]: string};
+export type CreateJoinTokenRequestTags = {[key: string]: string} | null;

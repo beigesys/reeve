@@ -58,6 +58,11 @@
 //!   `20-site.<label>` overlay layer, §8.4 single writer); REQUIRED
 //!   when REEVE_UPSTREAM is set
 //! - REEVE_SYNC_INTERVAL_SECS     sync loop period, default 60
+//!
+//! Server tier declaration (spec/reeve/11-fleet-model.md §11.6):
+//! - REEVE_TIER                   root (default) | site. A `site` tier
+//!   is a gateway and REQUIRES REEVE_UPSTREAM + REEVE_SITE (error
+//!   otherwise); `root` ignores them.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -91,12 +96,29 @@ pub struct ProxyConfig {
     pub trusted: Vec<Cidr>,
 }
 
+/// Server tier declaration (spec/reeve/11-fleet-model.md §11.6): a
+/// convenience/clarity statement of where this instance sits in the
+/// topology. The operative federation behavior is still driven by
+/// `REEVE_UPSTREAM` presence (deploy.md D9) — `Site` merely names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerTier {
+    /// The cloud/hub (default). Serves every level; no upstream.
+    Root,
+    /// An on-prem site gateway: MUST also set `REEVE_UPSTREAM` and
+    /// `REEVE_SITE` (federation §8.1). Belongs to exactly one Site.
+    Site,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
     pub auth: AuthMode,
     pub session_ttl_secs: i64,
+    /// Declared topology tier (§11.6). `Site` requires federation to be
+    /// configured (`REEVE_UPSTREAM` + `REEVE_SITE`); `Root` is the
+    /// default and ignores them.
+    pub tier: ServerTier,
     /// Tier registry endpoint (docs/decisions/delivery.md D8): the value
     /// `${REEVE_REGISTRY}` resolves to at render time. A DECLARED render
     /// input (tree-render.md D3) — it enters render via `RenderContext`,
@@ -281,6 +303,27 @@ impl Config {
         let zot = Self::zot_from_lookup(&get)?;
         let federation = Self::federation_from_lookup(&get)?;
 
+        // Server tier declaration (§11.6). A `site` tier is a gateway and
+        // therefore MUST have federation configured (REEVE_UPSTREAM +
+        // REEVE_SITE, which federation_from_lookup already validates
+        // together); a `site` without an upstream is a config error. A
+        // `root` tier ignores REEVE_SITE/REEVE_UPSTREAM (they may be
+        // absent). The operative behavior remains upstream-presence
+        // driven (D9); this is the clarity declaration.
+        let tier = match get("REEVE_TIER").as_deref().unwrap_or("root") {
+            "root" => ServerTier::Root,
+            "site" => {
+                if federation.is_none() {
+                    bail!(
+                        "REEVE_TIER=site requires REEVE_UPSTREAM and REEVE_SITE \
+                         (a site gateway syncs from its parent tier, federation §8.1)"
+                    );
+                }
+                ServerTier::Site
+            }
+            other => bail!("REEVE_TIER must be root|site, got {other:?}"),
+        };
+
         let install_open = match get("REEVE_INSTALL_OPEN").as_deref() {
             None | Some("") | Some("false") | Some("0") => false,
             Some("true") | Some("1") => true,
@@ -300,6 +343,7 @@ impl Config {
             data_dir,
             auth,
             session_ttl_secs,
+            tier,
             registry_endpoint,
             durability,
             zot,
@@ -568,6 +612,34 @@ mod tests {
     #[test]
     fn federation_defaults_to_root() {
         assert!(cfg(&[]).unwrap().federation.is_none());
+    }
+
+    #[test]
+    fn tier_defaults_to_root() {
+        assert_eq!(cfg(&[]).unwrap().tier, ServerTier::Root);
+        // Explicit root ignores absent upstream/site.
+        assert_eq!(cfg(&[("REEVE_TIER", "root")]).unwrap().tier, ServerTier::Root);
+    }
+
+    #[test]
+    fn site_tier_requires_upstream_and_site() {
+        // §11.6: a site tier without an upstream is a config error.
+        let err = cfg(&[("REEVE_TIER", "site")]).unwrap_err();
+        assert!(err.to_string().contains("REEVE_UPSTREAM"));
+        // A full gateway config with REEVE_TIER=site parses as Site.
+        let c = cfg(&[
+            ("REEVE_TIER", "site"),
+            ("REEVE_UPSTREAM", "https://hub.example:8420"),
+            ("REEVE_UPSTREAM_TOKEN", "rvt_deadbeef"),
+            ("REEVE_SITE", "plant-a"),
+        ])
+        .unwrap();
+        assert_eq!(c.tier, ServerTier::Site);
+    }
+
+    #[test]
+    fn bad_tier_is_an_error() {
+        assert!(cfg(&[("REEVE_TIER", "edge")]).is_err());
     }
 
     #[test]

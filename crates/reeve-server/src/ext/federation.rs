@@ -84,13 +84,15 @@ use crate::state::AppState;
 pub const TIER_TOKEN_PREFIX: &str = "rvt_";
 
 /// Default tree-path scope of a fresh tier token: the hub-owned layer
-/// families (fleet/class/region, §8.2) plus vendored packages. The
-/// numeric prefixes are the D11 taxonomy convention (render.rs
+/// families (REV-010 §11.1 — the base `00-all`, `10-fleet.<name>`, and
+/// `30-type.<name>`; the `20-site.<name>` and `40-device.<id>` layers
+/// belong to the gateway, §8.2/§8.4) plus vendored packages. The
+/// numeric prefixes are the D11/D12 taxonomy convention (render.rs
 /// layer_chain); admins can override per token.
 pub const DEFAULT_SYNC_PREFIXES: &[&str] = &[
-    "layers/00-fleet",
-    "layers/05-class.",
-    "layers/10-region.",
+    "layers/00-all",
+    "layers/10-fleet.",
+    "layers/30-type.",
     "packages/",
 ];
 
@@ -2024,17 +2026,17 @@ mod tests {
         let prefixes: Vec<String> =
             DEFAULT_SYNC_PREFIXES.iter().map(|s| s.to_string()).collect();
         for path in [
-            "layers/00-fleet/apps/web/app.yaml",
-            "layers/05-class.gpu/apps/x/app.yaml",
-            "layers/10-region.emea/params.yaml",
+            "layers/00-all/apps/web/app.yaml",
+            "layers/10-fleet.north/apps/x/app.yaml",
+            "layers/30-type.hmi/params.yaml",
             "packages/web/1.0.0/margo.yaml",
         ] {
             assert!(in_scope(&prefixes, path), "{path} should be in scope");
         }
         for path in [
             "layers/20-site.plant-a/apps/web/app.yaml",
-            "layers/30-device.dev-1/apps/web/app.yaml",
-            "layers/00-fleet-other/x", // no boundary match
+            "layers/40-device.dev-1/apps/web/app.yaml",
+            "layers/00-all-other/x", // no boundary match
         ] {
             assert!(!in_scope(&prefixes, path), "{path} should be OUT of scope");
         }

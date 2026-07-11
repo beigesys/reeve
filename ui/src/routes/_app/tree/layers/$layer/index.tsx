@@ -109,7 +109,7 @@ function LayerPage() {
         <Button variant="ghost" size="sm" asChild>
           <Link to="/tree">
             <ArrowLeft className="size-4" />
-            Tree
+            Advanced
           </Link>
         </Button>
         <h1 className="font-mono text-xl font-semibold tracking-tight">{layer}</h1>

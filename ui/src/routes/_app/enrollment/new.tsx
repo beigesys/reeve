@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Plus, X } from 'lucide-react'
 import { useList } from '@/api/endpoints/devices/devices'
 import {
   getIndexQueryKey,
   useCreate,
 } from '@/api/endpoints/join-tokens/join-tokens'
 import type { CreatedJoinToken } from '@/api/model'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -45,8 +46,17 @@ function JoinTokenCreatePage() {
   const [ttlHours, setTtlHours] = useState('24')
   const [maxUses, setMaxUses] = useState('1')
   const [deviceId, setDeviceId] = useState('')
+  const [fleet, setFleet] = useState('')
+  const [site, setSite] = useState('')
+  const [type, setType] = useState('')
+  const [tags, setTags] = useState<Record<string, string>>({})
+  const [tagKey, setTagKey] = useState('')
+  const [tagValue, setTagValue] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [minted, setMinted] = useState<CreatedJoinToken | null>(null)
+
+  const distinct = (get: (d: (typeof deviceRows)[number]) => string | null | undefined) =>
+    [...new Set(deviceRows.map(get).filter((v): v is string => !!v))].sort()
 
   const submit = async () => {
     setError(null)
@@ -55,6 +65,10 @@ function JoinTokenCreatePage() {
         ttl_secs: ttlHours.trim() === '' ? null : Math.round(Number(ttlHours) * 3600),
         max_uses: maxUses.trim() === '' ? null : Number(maxUses),
         device_id: deviceId || null,
+        fleet: fleet.trim() || null,
+        site: site.trim() || null,
+        type: type.trim() || null,
+        tags: Object.keys(tags).length > 0 ? tags : null,
       },
     })
     if (res.status === 201) {
@@ -98,6 +112,21 @@ function JoinTokenCreatePage() {
               {minted.max_uses === 1 ? '' : 's'}
               {minted.device_id ? ` · re-enrolls ${minted.device_id}` : ''}
             </p>
+            {(fleet || site || type || Object.keys(tags).length > 0) && (
+              <p className="text-sm text-muted-foreground">
+                Pre-assigns:{' '}
+                {[
+                  fleet && `Fleet ${fleet}`,
+                  site && `Site ${site}`,
+                  type && `Type ${type}`,
+                  ...Object.entries(tags).map(
+                    ([k, v]) => `${k}${v ? `=${v}` : ''}`,
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            )}
             <div className="flex gap-2">
               <Button variant="outline" size="sm" asChild>
                 <Link to="/enrollment">Back to tokens</Link>
@@ -171,6 +200,97 @@ function JoinTokenCreatePage() {
                 reinstall) instead of enrolling a new one.
               </span>
             </div>
+
+            <div className="flex flex-col gap-3 rounded-md border p-3">
+              <div className="flex flex-col gap-0.5">
+                <Label>Pre-assign (optional)</Label>
+                <span className="text-xs text-muted-foreground">
+                  Where a device lands the moment it enrolls with this token.
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                {(
+                  [
+                    ['Fleet', fleet, setFleet, (d: (typeof deviceRows)[number]) => d.fleet],
+                    ['Site', site, setSite, (d: (typeof deviceRows)[number]) => d.site],
+                    ['Device type', type, setType, (d: (typeof deviceRows)[number]) => d.type],
+                  ] as const
+                ).map(([label, value, setter, get], i) => (
+                  <div key={label} className="flex flex-col gap-1.5">
+                    <Label htmlFor={`assign-${i}`}>{label}</Label>
+                    <Input
+                      id={`assign-${i}`}
+                      list={`assign-${i}-options`}
+                      value={value}
+                      onChange={(e) => setter(e.target.value)}
+                      placeholder="none"
+                    />
+                    <datalist id={`assign-${i}-options`}>
+                      {distinct(get).map((o) => (
+                        <option key={o} value={o} />
+                      ))}
+                    </datalist>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Tags</Label>
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(tags).map(([k, v]) => (
+                    <Badge
+                      key={k}
+                      variant="secondary"
+                      className="gap-1 font-mono font-normal"
+                    >
+                      {k}
+                      {v ? `=${v}` : ''}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTags((prev) => {
+                            const next = { ...prev }
+                            delete next[k]
+                            return next
+                          })
+                        }
+                        aria-label={`Remove ${k}`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder="key"
+                    value={tagKey}
+                    onChange={(e) => setTagKey(e.target.value)}
+                    className="max-w-40 font-mono"
+                  />
+                  <Input
+                    placeholder="value"
+                    value={tagValue}
+                    onChange={(e) => setTagValue(e.target.value)}
+                    className="max-w-40 font-mono"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!tagKey.trim()}
+                    onClick={() => {
+                      const k = tagKey.trim()
+                      if (k) setTags((prev) => ({ ...prev, [k]: tagValue.trim() }))
+                      setTagKey('')
+                      setTagValue('')
+                    }}
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
             <div className="flex items-center gap-3">
               <Button onClick={() => void submit()} disabled={create.isPending}>
                 {create.isPending ? 'Minting…' : 'Mint token'}

@@ -13,7 +13,14 @@ export interface CreateRolloutResponse {
   /** Resolved cohort device ids. */
   cohort: string[];
   revision: number;
+  /**
+     * Present when this rollout is a rollback of another (§11.5).
+     * @nullable
+     */
+  rollbackOf?: string | null;
   rolloutId: string;
+  /** Human scope phrasing (§11.5: describe scope in words). */
+  scopeDescription: string;
   /** Always `active` at creation. */
   state: string;
   /** The wave partition (device ids per wave). */

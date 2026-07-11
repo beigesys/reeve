@@ -35,6 +35,7 @@ fn config(data_dir: &FsPath) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None, // anonymous acts as admin (D1)
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,
@@ -161,7 +162,7 @@ async fn author(app: &Router) {
     let (status, _) = send_json(
         app,
         put_files(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         ),
     )

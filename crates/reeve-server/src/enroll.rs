@@ -3,7 +3,7 @@
 //!
 //! The D4 ceremony: validate the join token, create (or resume) the
 //! device row, seed the device's layer in the desired-state tree
-//! (tree-render.md D11: `layers/30-device.<device_id>/`), and issue the
+//! (tree-render.md D11: `layers/40-device.<device_id>/`), and issue the
 //! ONE device credential (auth.md D1).
 //!
 //! Atomicity (Law 3): all server-table writes — token validation +
@@ -37,9 +37,10 @@ pub fn generate_device_id() -> String {
     format!("dev-{}", hex::encode(buf))
 }
 
-/// The device's layer path in the overlay tree (tree-render.md D11).
+/// The device's layer path in the overlay tree (tree-render.md D11;
+/// REV-010 §11.1 taxonomy: the device layer is `40-device.<id>`).
 pub fn device_layer_keep_path(device_id: &str) -> String {
-    format!("layers/30-device.{device_id}/.keep")
+    format!("layers/40-device.{device_id}/.keep")
 }
 
 /// [`EnrollmentService`] over the server DB + revision store.
@@ -61,6 +62,14 @@ struct JoinTokenRow {
     uses: i64,
     device_id: Option<String>,
     revoked_at: Option<i64>,
+    // Enrollment pre-assignment (spec/reeve/11-fleet-model.md §11.3,
+    // agent.md D4): applied to a NEWLY-created device row so a box lands
+    // in the right group at first contact. NULL => unset (inherits base).
+    fleet: Option<String>,
+    site: Option<String>,
+    r#type: Option<String>,
+    /// JSON object of tags (same shape as devices.labels); NULL => none.
+    tags: Option<String>,
 }
 
 impl EnrollmentService for SqliteEnrollmentService {
@@ -77,7 +86,8 @@ impl EnrollmentService for SqliteEnrollmentService {
 
             let row: Option<JoinTokenRow> = tx
                 .query_row(
-                    "SELECT expires_at, max_uses, uses, device_id, revoked_at
+                    "SELECT expires_at, max_uses, uses, device_id, revoked_at,
+                            fleet, site, \"type\", tags
                      FROM join_tokens WHERE token_hash = ?1",
                     params![jt_hash],
                     |r| {
@@ -87,6 +97,10 @@ impl EnrollmentService for SqliteEnrollmentService {
                             uses: r.get(2)?,
                             device_id: r.get(3)?,
                             revoked_at: r.get(4)?,
+                            fleet: r.get(5)?,
+                            site: r.get(6)?,
+                            r#type: r.get(7)?,
+                            tags: r.get(8)?,
                         })
                     },
                 )
@@ -172,19 +186,30 @@ impl EnrollmentService for SqliteEnrollmentService {
                                 params![req.hostname],
                             )
                             .map_err(|e| internal(&e))?;
+                            // §11.3 pre-assignment: the join token's
+                            // fleet/site/type/tags land on the new row so
+                            // the device is in the right group at first
+                            // contact (labels default to `{}` when the
+                            // token carries no tags).
+                            let labels = token.tags.clone().unwrap_or_else(|| "{}".to_string());
                             tx.execute(
                                 "INSERT INTO devices
                                      (device_id, hostname, arch, agent_version,
-                                      enrolled_at, labels, enrolled_with, last_seen_at)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, ?7)",
+                                      enrolled_at, labels, enrolled_with, last_seen_at,
+                                      fleet, site, \"type\")
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                                 params![
                                     id,
                                     req.hostname,
                                     req.arch,
                                     req.agent_version,
                                     now,
+                                    labels,
                                     jt_hash,
-                                    now
+                                    now,
+                                    token.fleet,
+                                    token.site,
+                                    token.r#type,
                                 ],
                             )
                             .map_err(|e| internal(&e))?;
@@ -221,7 +246,7 @@ impl EnrollmentService for SqliteEnrollmentService {
     }
 }
 
-/// Ensure `layers/30-device.<device_id>/` exists in the local stream
+/// Ensure `layers/40-device.<device_id>/` exists in the local stream
 /// (tree-render.md D11) by committing an empty `.keep` file. Idempotent:
 /// present at head => no new revision.
 pub fn ensure_device_layer(
@@ -521,6 +546,67 @@ mod tests {
         let tree = store.tree_at(head).unwrap();
         assert!(tree.contains_key("layers/00-fleet/apps/nginx/app.yaml"));
         assert!(tree.contains_key(&device_layer_keep_path(&resp.device_id)));
+    }
+
+    #[test]
+    fn plain_token_pre_assigns_group_and_tags() {
+        // §11.3: a join token carrying {fleet, site, type, tags} lands
+        // them on the newly-enrolled device row at first contact.
+        let h = harness();
+        let assign = join_tokens::PreAssign {
+            fleet: Some("north".into()),
+            site: Some("plant-a".into()),
+            r#type: Some("hmi".into()),
+            tags: Some(
+                [("env".to_string(), "prod".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+        let jt =
+            join_tokens::issue_with(&h.db.lock().unwrap(), "op", 3600, 1, None, &assign).unwrap();
+        let resp = h.svc.enroll(&req(&jt, "edge-01")).unwrap();
+
+        let (fleet, site, ty, labels): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = h
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT fleet, site, \"type\", labels FROM devices WHERE device_id = ?1",
+                params![resp.device_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(fleet.as_deref(), Some("north"));
+        assert_eq!(site.as_deref(), Some("plant-a"));
+        assert_eq!(ty.as_deref(), Some("hmi"));
+        assert_eq!(labels, "{\"env\":\"prod\"}");
+    }
+
+    #[test]
+    fn plain_token_without_pre_assignment_leaves_group_unset() {
+        // The base case (no pre-assignment) still enrolls with empty
+        // labels and no group assignment.
+        let h = harness();
+        let jt = plain_token(&h, 3600, 1);
+        let resp = h.svc.enroll(&req(&jt, "edge-01")).unwrap();
+        let (fleet, site, labels): (Option<String>, Option<String>, String) = h
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT fleet, site, labels FROM devices WHERE device_id = ?1",
+                params![resp.device_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(fleet.is_none() && site.is_none());
+        assert_eq!(labels, "{}");
     }
 
     #[test]

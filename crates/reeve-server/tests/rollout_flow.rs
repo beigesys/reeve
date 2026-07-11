@@ -37,6 +37,7 @@ fn config(data_dir: &FsPath) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None, // anonymous acts as admin (D1)
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,
@@ -146,7 +147,7 @@ async fn author_fleet(app: &Router, greeting: &str) -> i64 {
 async fn put_fleet(app: &Router, greeting: &str) -> i64 {
     put_tree(
         app,
-        "/api/tree/layers/00-fleet",
+        "/api/tree/layers/00-all",
         &[
             ("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n"),
             ("apps/web/params.yaml", &format!("greeting: {greeting}\n")),
@@ -262,50 +263,52 @@ fn rollout_state(state: &AppState, id: &str) -> (String, i64, Option<String>) {
 
 // --------------------------------------------------------------- tests
 
-/// §11.1 cohort selectors over the API: explicit list, tree selection
-/// (layer subtree), labels-as-grouping (D12). Unit coverage of the
-/// resolution logic lives in ext/rollouts.rs; this exercises it with
-/// real device rows through the create route.
+/// REV-010 §11.5 scope resolution over the API: a rollout targets a
+/// SCOPE (§11.4) narrowed by an optional tag cohort, resolved to a
+/// device set at creation. Head is pinned server-side (no operator-
+/// chosen revision). Unit coverage of the resolution logic lives in
+/// ext/rollouts.rs; this exercises it with real device rows.
 #[tokio::test]
-async fn cohort_selection_list_tree_and_labels() {
+async fn scope_selection_by_site_all_and_tags() {
     let dir = tempfile::tempdir().unwrap();
     let (app, state) = app(dir.path());
     add_device(&state, "d1", Some("plant-a"), &json!({"env": "prod"}));
     add_device(&state, "d2", Some("plant-b"), &json!({"env": "prod"}));
     add_device(&state, "d3", Some("plant-a"), &json!({"env": "dev"}));
     author_fleet(&app, "v1").await;
-    let rev = put_fleet(&app, "v2").await;
+    put_fleet(&app, "v2").await;
 
-    // Tree selection: everything under 20-site.plant-a.
+    // Scope: a site. Head is pinned server-side.
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev, "cohort": { "layers": ["20-site.plant-a"] }, "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "site", "name": "plant-a" }, "gate": strict_gate() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["cohort"], json!(["d1", "d3"]));
+    assert_eq!(body["scopeDescription"], "Site plant-a");
     post_action(&app, body["rolloutId"].as_str().unwrap(), "abort").await;
 
-    // Labels select cohorts (D12) — never configuration.
+    // Scope: all devices, narrowed by a tag cohort (D12 — tags select,
+    // never configure).
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev, "cohort": { "labels": {"env": "prod"} }, "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "all" }, "tagCohort": {"env": "prod"}, "gate": strict_gate() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["cohort"], json!(["d1", "d2"]));
+    assert_eq!(body["scopeDescription"], "All devices tagged env=prod");
     post_action(&app, body["rolloutId"].as_str().unwrap(), "abort").await;
 
-    // Explicit list + union with labels, deduped.
+    // Scope: an explicit device list.
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d3"], "labels": {"env": "prod"} },
-                 "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "devices", "ids": ["d2", "d3"] }, "gate": strict_gate() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["cohort"], json!(["d1", "d2", "d3"]));
+    assert_eq!(body["cohort"], json!(["d2", "d3"]));
 }
 
 /// §11.2 + §11.3: waves advance one at a time; each gate opens only on
@@ -327,8 +330,7 @@ async fn wave_advancement_on_healthy_gate() {
 
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d1", "d2"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d1", "d2"] },
                  "waves": [["d1"], ["d2"]],
                  "gate": strict_gate() }),
     )
@@ -389,12 +391,11 @@ async fn auto_pause_on_failed_status_then_resume() {
     let t2 = add_device(&state, "d2", None, &json!({}));
     author_fleet(&app, "v1").await;
     let baseline_rev = rendered_revision(&state, "d2").unwrap();
-    let rev = put_fleet(&app, "v2").await;
+    put_fleet(&app, "v2").await;
 
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d1", "d2"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d1", "d2"] },
                  "waves": [["d1"], ["d2"]],
                  "gate": strict_gate() }),
     )
@@ -455,7 +456,7 @@ async fn pinned_device_counts_converged_and_is_surfaced() {
     // Device-layer pin: d-p's greeting never follows the fleet value.
     put_tree(
         &app,
-        "/api/tree/layers/30-device.d-p",
+        "/api/tree/layers/40-device.d-p",
         &[("apps/web/params.yaml", "greeting: pinned\n")],
     )
     .await;
@@ -467,8 +468,7 @@ async fn pinned_device_counts_converged_and_is_surfaced() {
 
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d-n", "d-p"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d-n", "d-p"] },
                  "gate": strict_gate() }),
     )
     .await;
@@ -508,15 +508,14 @@ async fn manual_pause_resume_and_abort() {
     add_device(&state, "d2", None, &json!({}));
     author_fleet(&app, "v1").await;
     let baseline_rev = rendered_revision(&state, "d2").unwrap();
-    let rev = put_fleet(&app, "v2").await;
+    put_fleet(&app, "v2").await;
 
     // Patient gate (long timeout): the wave-0 gate WAITS for reports
     // instead of resolving, so pause/resume mechanics are isolated
     // from gate outcomes here.
     let (_, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d1", "d2"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d1", "d2"] },
                  "waves": [["d1"], ["d2"]],
                  "gate": { "soakSecs": 0, "gateTimeoutSecs": 3600, "undeterminedAllowance": 0 } }),
     )
@@ -563,8 +562,7 @@ async fn restart_mid_rollout_resumes_exactly() {
         let rev = put_fleet(&app, "v2").await;
         let (status, body) = create_rollout(
             &app,
-            &json!({ "revision": rev,
-                     "cohort": { "devices": ["d1", "d2"] },
+            &json!({ "scope": { "kind": "devices", "ids": ["d1", "d2"] },
                      "waves": [["d1"], ["d2"]],
                      "gate": strict_gate() }),
         )
@@ -617,7 +615,7 @@ async fn rollback_is_a_new_rollout_to_reverted_content() {
     // Roll out the bad revision; it fails and is aborted.
     let (_, body) = create_rollout(
         &app,
-        &json!({ "revision": rev_bad, "cohort": { "devices": ["d1"] }, "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "devices", "ids": ["d1"] }, "gate": strict_gate() }),
     )
     .await;
     let id_bad = body["rolloutId"].as_str().unwrap().to_string();
@@ -637,7 +635,7 @@ async fn rollback_is_a_new_rollout_to_reverted_content() {
     assert!(rev_fix > rev_bad);
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev_fix, "cohort": { "devices": ["d1"] }, "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "devices", "ids": ["d1"] }, "gate": strict_gate() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "aborted rollout must not block: {body}");
@@ -655,6 +653,58 @@ async fn rollback_is_a_new_rollout_to_reverted_content() {
     );
 }
 
+/// REV-010 §11.5: POST /api/rollouts/{id}/rollback aborts the original
+/// and starts a NEW rollout returning the same cohort to its pre-rollout
+/// config. Content reverts; manifestVersion still only climbs.
+#[tokio::test]
+async fn rollback_endpoint_reverts_cohort_via_new_rollout() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, state) = app(dir.path());
+    let t1 = add_device(&state, "d1", None, &json!({}));
+    author_fleet(&app, "v1").await;
+    let digest_v1 = content_digest(&state, "d1").unwrap();
+    put_fleet(&app, "v2-bad").await;
+
+    // Roll the current (bad) config out to d1; it advances and soaks.
+    let (status, body) = create_rollout(
+        &app,
+        &json!({ "scope": { "kind": "devices", "ids": ["d1"] }, "gate": strict_gate() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id_bad = body["rolloutId"].as_str().unwrap().to_string();
+    let version_after_bad = manifest_version(&state, "d1").unwrap();
+    assert_ne!(content_digest(&state, "d1"), Some(digest_v1.clone()), "on the bad config");
+
+    // Rollback: aborts the bad rollout, starts a NEW one back to the
+    // pre-rollout config.
+    let (status, rb) = post_action(&app, &id_bad, "rollback").await;
+    assert_eq!(status, StatusCode::CREATED, "{rb}");
+    assert_eq!(rollout_state(&state, &id_bad).0, "aborted", "original aborted by rollback");
+    assert_eq!(rb["rollbackOf"], id_bad);
+    assert_eq!(rb["scopeDescription"], "Device d1 (rollback)");
+    let id_rb = rb["rolloutId"].as_str().unwrap().to_string();
+
+    // The rollback wave advances d1 back to the old content, gated on a
+    // healthy report like any rollout.
+    report_status(&app, &t1, "d1", "installed", 5).await;
+    rollouts::tick(&state).unwrap();
+    assert_eq!(rollout_state(&state, &id_rb).0, "completed");
+    assert_eq!(content_digest(&state, "d1"), Some(digest_v1), "content reverted");
+    assert!(
+        manifest_version(&state, "d1").unwrap() > version_after_bad,
+        "manifestVersion only ever climbs (§11.5)"
+    );
+
+    // The new rollout records that it is a rollback (§11.8 audit).
+    let detail = rollout_status(&app, &id_rb).await;
+    assert_eq!(detail["transitions"][0]["detail"], format!("rollback of {id_bad}"));
+
+    // Rolling back an unknown rollout is a 404.
+    let (status, _) = post_action(&app, "ro-nope", "rollback").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 /// Devices outside the cohort are untouched by the rollout: they track
 /// head as always, carry no hold, and appear in no wave.
 #[tokio::test]
@@ -670,8 +720,7 @@ async fn devices_outside_cohort_are_untouched() {
 
     let (_, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d1", "d3"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d1", "d3"] },
                  "waves": [["d1"], ["d3"]],
                  "gate": strict_gate() }),
     )
@@ -709,12 +758,11 @@ async fn creation_rejects_overlap_and_bad_input() {
     add_device(&state, "d1", None, &json!({}));
     add_device(&state, "d2", None, &json!({}));
     author_fleet(&app, "v1").await;
-    let rev = put_fleet(&app, "v2").await;
+    put_fleet(&app, "v2").await;
 
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev,
-                 "cohort": { "devices": ["d1", "d2"] },
+        &json!({ "scope": { "kind": "devices", "ids": ["d1", "d2"] },
                  "waves": [["d1"], ["d2"]],
                  "gate": strict_gate() }),
     )
@@ -725,25 +773,27 @@ async fn creation_rejects_overlap_and_bad_input() {
     // two rollouts.
     let (status, body) = create_rollout(
         &app,
-        &json!({ "revision": rev, "cohort": { "devices": ["d2"] }, "gate": strict_gate() }),
+        &json!({ "scope": { "kind": "devices", "ids": ["d2"] }, "gate": strict_gate() }),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
+    // An empty scope (a devices list with no ids) selects nobody.
     let (status, _) =
-        create_rollout(&app, &json!({ "revision": 9999, "cohort": { "devices": ["d1"] } })).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        create_rollout(&app, &json!({ "scope": { "kind": "devices", "ids": [] } })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "empty scope");
 
+    // A tag cohort matching nobody selects nobody.
     let (status, _) = create_rollout(
         &app,
-        &json!({ "revision": rev, "cohort": { "labels": {"nope": "x"} } }),
+        &json!({ "scope": { "kind": "all" }, "tagCohort": {"nope": "x"} }),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "empty cohort");
 
     let (status, _) = create_rollout(
         &app,
-        &json!({ "revision": rev, "cohort": { "devices": ["ghost"] } }),
+        &json!({ "scope": { "kind": "devices", "ids": ["ghost"] } }),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "unknown device");

@@ -244,7 +244,7 @@ async fn render_bump_nudges_connected_agent() {
     let res = app
         .clone()
         .oneshot(put_files(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         ))
         .await

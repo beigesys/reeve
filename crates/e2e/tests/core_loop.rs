@@ -95,7 +95,7 @@ async fn real_change_reconverges() {
 
     // Change dev-1's own layer: a real content change for this device.
     let changed = author
-        .put_layer("30-device.dev-1", &[("apps/web/params.yaml", "greeting: bumped\n")])
+        .put_layer("40-device.dev-1", &[("apps/web/params.yaml", "greeting: bumped\n")])
         .await;
     assert!(changed);
 

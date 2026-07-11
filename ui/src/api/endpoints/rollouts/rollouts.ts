@@ -226,16 +226,16 @@ export const getCreateRouteUrl = () => {
 }
 
 /**
- * DECISION (baseline): un-advanced cohort devices are held at
- * `baselineRevision` (default: the target revision's parent). The
- * authoring commit has usually already rendered every device at head
- * by the time the rollout is created (tree.rs render hook), so
- * creation re-pins cohort devices to the baseline render; devices
- * that polled in the gap converge back to it. manifestVersion stays
- * strictly monotonic throughout (§11.5 note — content may revert,
- * versions never do). Create the rollout promptly after the commit
- * and no device ever sees the staged content early.
- * @summary POST /api/rollouts (operator+) — create and immediately start.
+ * DECISION (baseline): un-advanced cohort devices are held at the head
+ * revision's PARENT (the config just before this one). The authoring/
+ * deploy commit has usually already rendered every device at head, so
+ * creation re-pins cohort devices to that baseline; devices that polled
+ * in the gap converge back to it. manifestVersion stays strictly
+ * monotonic throughout (§11.5 — content may revert, versions never do).
+ * @summary POST /api/rollouts (operator+) — roll out the CURRENT desired config
+to a scope in waves (REV-010 §11.5). The operator names a scope
+(§11.4) + optional tag cohort; the server resolves the device set,
+pins the current local head, and stages it.
  */
 export const createRoute = async (createRequest: CreateRequest, options?: RequestInit): Promise<createRouteResponse> => {
 
@@ -291,7 +291,10 @@ const {mutation: mutationOptions, fetch: fetchOptions} = options ?
     export type CreateRouteMutationError = void | ErrorBody
 
     /**
- * @summary POST /api/rollouts (operator+) — create and immediately start.
+ * @summary POST /api/rollouts (operator+) — roll out the CURRENT desired config
+to a scope in waves (REV-010 §11.5). The operator names a scope
+(§11.4) + optional tag cohort; the server resolves the device set,
+pins the current local head, and stages it.
  */
 export const useCreateRoute = <TError = void | ErrorBody,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRoute>>, TError,{data: CreateRequest}, TContext>, fetch?: RequestInit}
@@ -777,4 +780,132 @@ export const useResumeRoute = <TError = void | ErrorBody,
         TContext
       > => {
       return useMutation(getResumeRouteMutationOptions(options), queryClient);
+    }
+    export type rollbackRouteResponse201 = {
+  data: CreateRolloutResponse
+  status: 201
+}
+
+export type rollbackRouteResponse401 = {
+  data: void
+  status: 401
+}
+
+export type rollbackRouteResponse403 = {
+  data: void
+  status: 403
+}
+
+export type rollbackRouteResponse404 = {
+  data: ErrorBody
+  status: 404
+}
+
+export type rollbackRouteResponse409 = {
+  data: ErrorBody
+  status: 409
+}
+
+export type rollbackRouteResponse422 = {
+  data: ErrorBody
+  status: 422
+}
+
+export type rollbackRouteResponseSuccess = (rollbackRouteResponse201) & {
+  headers: Headers;
+};
+export type rollbackRouteResponseError = (rollbackRouteResponse401 | rollbackRouteResponse403 | rollbackRouteResponse404 | rollbackRouteResponse409 | rollbackRouteResponse422) & {
+  headers: Headers;
+};
+
+export type rollbackRouteResponse = (rollbackRouteResponseSuccess | rollbackRouteResponseError)
+
+export const getRollbackRouteUrl = (rolloutId: string,) => {
+
+
+
+
+  return `/api/rollouts/${rolloutId}/rollback`
+}
+
+/**
+ * @summary POST /api/rollouts/{id}/rollback (operator+) — start a NEW rollout
+returning the cohort to its pre-rollout config (REV-010 §11.5:
+rollback is a new rollout of the previous config, NEVER "select
+revision N"). The original rollout is aborted first (if still
+active/paused) so its holds survive to be taken over; the rollback
+advances the same cohort to the config the original held them at
+before it ran. manifestVersion still only ever climbs (§11.5).
+ */
+export const rollbackRoute = async (rolloutId: string, options?: RequestInit): Promise<rollbackRouteResponse> => {
+
+  const res = await fetch(getRollbackRouteUrl(rolloutId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: rollbackRouteResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as rollbackRouteResponse
+}
+
+
+
+
+
+export const getRollbackRouteMutationOptions = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rollbackRoute>>, TError,{rolloutId: string}, TContext>, fetch?: RequestInit}
+): UseMutationOptions<Awaited<ReturnType<typeof rollbackRoute>>, TError,{rolloutId: string}, TContext> => {
+
+const mutationKey = ['rollbackRoute'];
+const {mutation: mutationOptions, fetch: fetchOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, fetch: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof rollbackRoute>>, {rolloutId: string}> = (props) => {
+          const {rolloutId} = props ?? {};
+
+          return  rollbackRoute(rolloutId,fetchOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RollbackRouteMutationResult = NonNullable<Awaited<ReturnType<typeof rollbackRoute>>>
+
+    export type RollbackRouteMutationError = void | ErrorBody
+
+    /**
+ * @summary POST /api/rollouts/{id}/rollback (operator+) — start a NEW rollout
+returning the cohort to its pre-rollout config (REV-010 §11.5:
+rollback is a new rollout of the previous config, NEVER "select
+revision N"). The original rollout is aborted first (if still
+active/paused) so its holds survive to be taken over; the rollback
+advances the same cohort to the config the original held them at
+before it ran. manifestVersion still only ever climbs (§11.5).
+ */
+export const useRollbackRoute = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rollbackRoute>>, TError,{rolloutId: string}, TContext>, fetch?: RequestInit}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof rollbackRoute>>,
+        TError,
+        {rolloutId: string},
+        TContext
+      > => {
+      return useMutation(getRollbackRouteMutationOptions(options), queryClient);
     }

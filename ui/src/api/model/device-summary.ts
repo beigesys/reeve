@@ -7,6 +7,7 @@
  */
 import type { DeviceDeploymentState } from './device-deployment-state';
 import type { DeviceSummaryLabels } from './device-summary-labels';
+import type { DeviceSummaryTags } from './device-summary-tags';
 import type { PresenceInfo } from './presence-info';
 
 /**
@@ -16,20 +17,33 @@ export interface DeviceSummary {
   agentVersion: string;
   arch: string;
   /**
-     * Layer-chain membership (D11: fleet -> class? -> region -> site
-     * -> device), each nullable.
+     * Retained V2 columns, dormant after the REV-010 taxonomy remap
+     * (kept for compatibility; no longer feed the config chain).
      * @nullable
      */
   class?: string | null;
   /** Current per-deployment states. */
   deployments: DeviceDeploymentState[];
   deviceId: string;
+  /**
+     * Human rename, distinct from `device_id` (§11.3); `null` => fall
+     * back to hostname.
+     * @nullable
+     */
+  displayName?: string | null;
   /** Unix seconds. */
   enrolledAt: number;
+  /**
+     * Hierarchy-tier assignment (spec/reeve/11-fleet-model.md §11.1:
+     * all -> fleet? -> site? -> type? -> device), each nullable.
+     * @nullable
+     */
+  fleet?: string | null;
   hostname: string;
   /**
      * Free-form labels (docs/decisions/tree-render.md D12: labels
-     * group and filter, never configure).
+     * group and filter, never configure). Alias: `tags` (§11.2 — the
+     * operator-facing name for the same column).
      */
   labels: DeviceSummaryLabels;
   /**
@@ -37,6 +51,11 @@ export interface DeviceSummary {
      * @nullable
      */
   lastSeenAt?: number | null;
+  /**
+     * Pin hold (§11.3): the device keeps its current desired config and
+     * is excluded from new deploys/rollouts until unpinned.
+     */
+  pinned: boolean;
   presence: PresenceInfo;
   /** @nullable */
   region?: string | null;
@@ -48,9 +67,18 @@ export interface DeviceSummary {
      */
   stale: boolean;
   /**
+     * Free-form key/value tags (spec/reeve/11-fleet-model.md §11.2) —
+     * the same data as `labels`, under the fleet-model name the UI
+     * uses. Ad-hoc grouping/filtering/rollout cohorts only; never
+     * selects config (that is the layer chain's job).
+     */
+  tags: DeviceSummaryTags;
+  /**
      * Child tier this device reached us through (federation §8.3);
      * `null` = enrolled here.
      * @nullable
      */
   tierOrigin?: string | null;
+  /** @nullable */
+  type?: string | null;
 }

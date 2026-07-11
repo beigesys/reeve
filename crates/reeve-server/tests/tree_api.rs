@@ -25,6 +25,7 @@ fn config(data_dir: &FsPath, auth: AuthMode) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth,
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,
@@ -86,14 +87,14 @@ async fn layer_put_is_idempotent_same_content_no_new_revision() {
         "fleet v1",
         &[("apps/nginx/app.yaml", "enabled: true\n")],
     );
-    let (status, first) = send(&app, put_json("/api/tree/layers/00-fleet", body.clone())).await;
+    let (status, first) = send(&app, put_json("/api/tree/layers/00-all", body.clone())).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(first["changed"], true);
     assert_eq!(first["stream"], "local");
     let rev1 = first["revision"].as_i64().unwrap();
 
     // Same content again (the IaC re-apply): SAME revision, no commit.
-    let (status, second) = send(&app, put_json("/api/tree/layers/00-fleet", body)).await;
+    let (status, second) = send(&app, put_json("/api/tree/layers/00-all", body)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(second["changed"], false, "identical content => no new revision (D14)");
     assert_eq!(second["revision"].as_i64().unwrap(), rev1);
@@ -102,7 +103,7 @@ async fn layer_put_is_idempotent_same_content_no_new_revision() {
     let (status, third) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("fleet v2", &[("apps/nginx/app.yaml", "enabled: false\n")]),
         ),
     )
@@ -120,7 +121,7 @@ async fn layer_put_replaces_the_whole_layer_and_leaves_others_alone() {
     send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("fleet", &[("apps/a/app.yaml", "a\n"), ("apps/b/app.yaml", "b\n")]),
         ),
     )
@@ -137,7 +138,7 @@ async fn layer_put_replaces_the_whole_layer_and_leaves_others_alone() {
     let (_, resp) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("fleet drop b", &[("apps/a/app.yaml", "a\n")]),
         ),
     )
@@ -147,8 +148,8 @@ async fn layer_put_replaces_the_whole_layer_and_leaves_others_alone() {
     let (status, body) = send(&app, get(&format!("/api/tree/revisions/{head}"))).await;
     assert_eq!(status, StatusCode::OK);
     let files = body["files"].as_object().unwrap();
-    assert!(files.contains_key("layers/00-fleet/apps/a/app.yaml"));
-    assert!(!files.contains_key("layers/00-fleet/apps/b/app.yaml"), "absent file removed");
+    assert!(files.contains_key("layers/00-all/apps/a/app.yaml"));
+    assert!(!files.contains_key("layers/00-all/apps/b/app.yaml"), "absent file removed");
     assert!(
         files.contains_key("layers/20-site.plant-a/apps/c/app.yaml"),
         "other layers untouched"
@@ -164,7 +165,7 @@ async fn writes_outside_the_ownership_set_are_refused() {
     state.ownership = Arc::new(Ownership::Gateway {
         owned_prefixes: vec![
             "layers/20-site.plant-a".into(),
-            "layers/30-device.".into(),
+            "layers/40-device.".into(),
         ],
     });
     let app = router::build(state.clone());
@@ -173,7 +174,7 @@ async fn writes_outside_the_ownership_set_are_refused() {
     let (status, body) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("nope", &[("apps/a/app.yaml", "a\n")]),
         ),
     )
@@ -235,7 +236,7 @@ async fn malformed_layer_names_are_rejected() {
     let (status, _) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("m", &[("../escape.yaml", "x")]),
         ),
     )
@@ -366,7 +367,7 @@ async fn history_diff_blame_and_404s() {
     let (_, r1) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body("fleet v1", &[("apps/nginx/app.yaml", "enabled: true\n")]),
         ),
     )
@@ -374,7 +375,7 @@ async fn history_diff_blame_and_404s() {
     let (_, r2) = send(
         &app,
         put_json(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             layer_body(
                 "fleet v2",
                 &[
@@ -406,15 +407,15 @@ async fn history_diff_blame_and_404s() {
     assert_eq!(status, StatusCode::OK);
     let diff = diff.as_array().unwrap();
     assert_eq!(diff.len(), 2);
-    assert_eq!(diff[0]["path"], "layers/00-fleet/apps/nginx/app.yaml");
+    assert_eq!(diff[0]["path"], "layers/00-all/apps/nginx/app.yaml");
     assert_eq!(diff[0]["change"], "modified");
-    assert_eq!(diff[1]["path"], "layers/00-fleet/apps/redis/app.yaml");
+    assert_eq!(diff[1]["path"], "layers/00-all/apps/redis/app.yaml");
     assert_eq!(diff[1]["change"], "added");
 
     // Blame: the nginx file changed at both revisions.
     let (status, blame) = send(
         &app,
-        get("/api/tree/blame/layers/00-fleet/apps/nginx/app.yaml"),
+        get("/api/tree/blame/layers/00-all/apps/nginx/app.yaml"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -427,7 +428,7 @@ async fn history_diff_blame_and_404s() {
     let (_, v1) = send_raw(
         &app,
         get(&format!(
-            "/api/tree/revisions/{rev1}/files/layers/00-fleet/apps/nginx/app.yaml"
+            "/api/tree/revisions/{rev1}/files/layers/00-all/apps/nginx/app.yaml"
         )),
     )
     .await;
@@ -489,13 +490,13 @@ async fn roles_writes_need_operator_reads_need_viewer() {
     let body = layer_body("m", &[(".keep", "")]);
 
     // Anonymous (password mode): 401 for both surfaces.
-    let (status, _) = send(&app, put_json("/api/tree/layers/00-fleet", body.clone())).await;
+    let (status, _) = send(&app, put_json("/api/tree/layers/00-all", body.clone())).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(&app, get("/api/tree/revisions")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Viewer: reads yes, writes 403.
-    let req = Request::put("/api/tree/layers/00-fleet")
+    let req = Request::put("/api/tree/layers/00-all")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::COOKIE, &viewer)
         .body(Body::from(body.to_string()))
@@ -510,7 +511,7 @@ async fn roles_writes_need_operator_reads_need_viewer() {
     assert_eq!(status, StatusCode::OK);
 
     // Operator: writes yes.
-    let req = Request::put("/api/tree/layers/00-fleet")
+    let req = Request::put("/api/tree/layers/00-all")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::COOKIE, &op)
         .body(Body::from(body.to_string()))

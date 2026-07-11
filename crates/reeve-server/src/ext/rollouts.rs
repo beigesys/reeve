@@ -53,6 +53,7 @@ use crate::db::now_secs;
 use crate::events::EventHub;
 use crate::join_tokens::require_at_least;
 use crate::render;
+use crate::scope::{self, Scope};
 use crate::state::AppState;
 
 /// §11.3 RECOMMENDED default soak window: 15 minutes.
@@ -72,25 +73,6 @@ pub const ENGINE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 // Request/response shapes
 // ---------------------------------------------------------------------
 
-/// Cohort selector (§11 terms): explicit device list, tree selections
-/// (layer subtrees), and/or label matches (D12: labels select COHORTS
-/// and filter UIs only — they never select or inject configuration).
-/// Selectors union; the resolved cohort is recorded at creation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CohortSpec {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub devices: Vec<String>,
-    /// Layer dir names per D11 grammar (`00-fleet`, `05-class.<n>`,
-    /// `10-region.<n>`, `20-site.<n>`, `30-device.<id>`); the numeric
-    /// prefix is optional here (`site.plant-a` works).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub layers: Vec<String>,
-    /// All pairs must match the device's free-form labels.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub labels: BTreeMap<String, String>,
-}
-
 /// Gate policy overrides (§11.3); defaults above.
 #[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,15 +86,23 @@ pub struct GateSpec {
     pub undetermined_allowance: Option<i64>,
 }
 
-/// POST /api/rollouts body. Waves: exactly one of `waves` (explicit
-/// partition), `strategy` (e.g. `["1", "10%", "rest"]`), `waveCount`,
-/// or none (single wave = whole cohort).
+/// POST /api/rollouts body (REV-010 §11.5): a rollout targets a SCOPE
+/// (§11.4) narrowed by an optional tag cohort, resolved to a device set
+/// at creation — NOT a revision id chosen by the operator. The current
+/// desired config (the local head) is pinned server-side and rolled out
+/// in waves. Waves: exactly one of `waves` (explicit partition),
+/// `strategy` (e.g. `["1", "10%", "rest"]`), `waveCount`, or none
+/// (single wave = whole cohort).
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateRequest {
-    /// The source tree revision (§11.1) — an existing local revision.
-    pub revision: i64,
-    pub cohort: CohortSpec,
+    /// The deploy scope (§11.4) this rollout targets.
+    pub scope: Scope,
+    /// Optional tag cohort narrowing the scope (D12: tags select
+    /// cohorts, never configuration). All pairs must match a device's
+    /// tags for it to be included.
+    #[serde(default)]
+    pub tag_cohort: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub waves: Option<Vec<Vec<String>>>,
     #[serde(default)]
@@ -123,104 +113,93 @@ pub struct CreateRequest {
     pub gate: GateSpec,
     #[serde(default)]
     pub failure_threshold: Option<i64>,
-    /// Hold revision for not-yet-advanced devices; default: the target
-    /// revision's parent (see module docs — DECISION below).
-    #[serde(default)]
-    pub baseline_revision: Option<i64>,
+}
+
+/// The wave partitioning inputs (a subset of [`CreateRequest`], so
+/// rollback can reuse [`resolve_waves`] with a single implicit wave).
+struct WaveSpec<'a> {
+    waves: &'a Option<Vec<Vec<String>>>,
+    strategy: &'a Option<Vec<String>>,
+    wave_count: Option<u32>,
 }
 
 // ---------------------------------------------------------------------
 // Cohort + wave resolution (pure over device rows)
 // ---------------------------------------------------------------------
 
-/// One device row's selector-relevant fields.
+/// One device row's selector-relevant fields (§11.1 hierarchy tiers +
+/// free-form tags/labels).
 struct SelectableDevice {
     device_id: String,
-    class: Option<String>,
-    region: Option<String>,
+    fleet: Option<String>,
     site: Option<String>,
+    r#type: Option<String>,
     labels: BTreeMap<String, String>,
 }
 
 fn load_selectable(conn: &Connection) -> rusqlite::Result<Vec<SelectableDevice>> {
+    // §11.3: a pinned device is held and excluded from new
+    // deploys/rollouts; a decommissioned device is tombstoned. Neither
+    // is a selectable rollout target.
     let mut stmt = conn.prepare(
-        "SELECT device_id, class, region, site, labels FROM devices
-         WHERE stale = 0 ORDER BY device_id",
+        "SELECT device_id, fleet, site, \"type\", labels FROM devices
+         WHERE stale = 0 AND pinned = 0 AND decommissioned_at IS NULL
+         ORDER BY device_id",
     )?;
     let rows = stmt.query_map([], |r| {
         let labels_json: String = r.get(4)?;
         Ok(SelectableDevice {
             device_id: r.get(0)?,
-            class: r.get(1)?,
-            region: r.get(2)?,
-            site: r.get(3)?,
+            fleet: r.get(1)?,
+            site: r.get(2)?,
+            r#type: r.get(3)?,
             labels: serde_json::from_str(&labels_json).unwrap_or_default(),
         })
     })?;
     rows.collect()
 }
 
-/// Strip an optional `NN-` numeric prefix (D11 layer dir grammar) so
-/// both `20-site.plant-a` and `site.plant-a` select the same devices.
-fn layer_label(layer: &str) -> &str {
-    let b = layer.as_bytes();
-    if b.len() > 3 && b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b'-' {
-        &layer[3..]
-    } else {
-        layer
-    }
-}
-
-/// Union of the spec's selectors over the (non-stale) device set.
-fn resolve_cohort(
+/// Resolve a scope (§11.4) narrowed by an optional tag cohort to a
+/// concrete device set (§11.5: "resolved to a device set at creation").
+/// The scope picks the base set; the tag cohort filters it (D12: tags
+/// select cohorts, never configuration).
+fn resolve_scope_cohort(
     devices: &[SelectableDevice],
-    spec: &CohortSpec,
+    scope: &Scope,
+    tags: &BTreeMap<String, String>,
 ) -> Result<Vec<String>, String> {
-    let known: BTreeMap<&str, &SelectableDevice> =
-        devices.iter().map(|d| (d.device_id.as_str(), d)).collect();
-    let mut out: BTreeSet<String> = BTreeSet::new();
-
-    for id in &spec.devices {
-        if !known.contains_key(id.as_str()) {
-            return Err(format!("unknown device `{id}` in cohort"));
+    let known: BTreeSet<&str> = devices.iter().map(|d| d.device_id.as_str()).collect();
+    let base: Vec<&SelectableDevice> = match scope {
+        Scope::All => devices.iter().collect(),
+        Scope::Fleet { name } => {
+            devices.iter().filter(|d| d.fleet.as_deref() == Some(name)).collect()
         }
-        out.insert(id.clone());
-    }
-
-    for layer in &spec.layers {
-        let label = layer_label(layer);
-        let matched: Vec<&SelectableDevice> = if label == "fleet" {
-            devices.iter().collect()
-        } else if let Some(n) = label.strip_prefix("class.") {
-            devices.iter().filter(|d| d.class.as_deref() == Some(n)).collect()
-        } else if let Some(n) = label.strip_prefix("region.") {
-            devices.iter().filter(|d| d.region.as_deref() == Some(n)).collect()
-        } else if let Some(n) = label.strip_prefix("site.") {
-            devices.iter().filter(|d| d.site.as_deref() == Some(n)).collect()
-        } else if let Some(id) = label.strip_prefix("device.") {
-            devices.iter().filter(|d| d.device_id == id).collect()
-        } else {
-            return Err(format!(
-                "layer selector `{layer}` is not fleet/class.<n>/region.<n>/site.<n>/device.<id>"
-            ));
-        };
-        out.extend(matched.iter().map(|d| d.device_id.clone()));
-    }
-
-    if !spec.labels.is_empty() {
-        out.extend(
-            devices
-                .iter()
-                .filter(|d| {
-                    spec.labels
-                        .iter()
-                        .all(|(k, v)| d.labels.get(k) == Some(v))
-                })
-                .map(|d| d.device_id.clone()),
-        );
-    }
-
-    Ok(out.into_iter().collect())
+        Scope::Site { name } => {
+            devices.iter().filter(|d| d.site.as_deref() == Some(name)).collect()
+        }
+        Scope::Type { name } => {
+            devices.iter().filter(|d| d.r#type.as_deref() == Some(name)).collect()
+        }
+        Scope::Devices { ids } => {
+            for id in ids {
+                // A device may be absent because it is unknown, or
+                // pinned/decommissioned (excluded from selection, §11.3).
+                if !known.contains(id.as_str()) {
+                    return Err(format!(
+                        "device `{id}` is unknown, pinned, or decommissioned — not a rollout target"
+                    ));
+                }
+            }
+            let want: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+            devices.iter().filter(|d| want.contains(d.device_id.as_str())).collect()
+        }
+    };
+    let cohort: Vec<String> = base
+        .into_iter()
+        .filter(|d| tags.iter().all(|(k, v)| d.labels.get(k) == Some(v)))
+        .map(|d| d.device_id.clone())
+        .collect();
+    Ok(cohort)
 }
 
 /// Resolve `strategy` items (`"1"`, `"10%"`, `"rest"`) to explicit wave
@@ -267,7 +246,7 @@ fn strategy_sizes(items: &[String], total: usize) -> Result<Vec<usize>, String> 
 
 /// Ordered waves (explicit partition, strategy, count, or one wave).
 /// Cohort order is deterministic (sorted device ids).
-fn resolve_waves(cohort: &[String], req: &CreateRequest) -> Result<Vec<Vec<String>>, String> {
+fn resolve_waves(cohort: &[String], req: &WaveSpec) -> Result<Vec<Vec<String>>, String> {
     let picked = [
         req.waves.is_some(),
         req.strategy.is_some(),
@@ -280,7 +259,7 @@ fn resolve_waves(cohort: &[String], req: &CreateRequest) -> Result<Vec<Vec<Strin
         return Err("give at most one of `waves`, `strategy`, `waveCount`".into());
     }
 
-    if let Some(waves) = &req.waves {
+    if let Some(waves) = req.waves {
         let cohort_set: BTreeSet<&str> = cohort.iter().map(String::as_str).collect();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for wave in waves {
@@ -304,7 +283,7 @@ fn resolve_waves(cohort: &[String], req: &CreateRequest) -> Result<Vec<Vec<Strin
         return Ok(waves);
     }
 
-    let sizes: Vec<usize> = if let Some(items) = &req.strategy {
+    let sizes: Vec<usize> = if let Some(items) = req.strategy {
         strategy_sizes(items, cohort.len())?
     } else if let Some(n) = req.wave_count {
         if n == 0 {
@@ -981,17 +960,38 @@ fn new_rollout_id() -> String {
     format!("ro-{}", hex::encode(buf))
 }
 
-/// POST /api/rollouts (operator+) — create and immediately start.
+/// The human scope phrasing recorded in `cohort_json` (§11.5). New
+/// rollouts store `{scope, tagCohort, description}`; if `description`
+/// is absent (defensive — future/old rows) fall back to rebuilding it
+/// from the scope, else a generic label.
+fn scope_description_of(cohort_json: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(cohort_json).unwrap_or(serde_json::Value::Null);
+    if let Some(d) = v.get("description").and_then(|d| d.as_str()) {
+        return d.to_string();
+    }
+    if let Some(scope) = v.get("scope")
+        && let Ok(scope) = serde_json::from_value::<Scope>(scope.clone())
+    {
+        let tags = v
+            .get("tagCohort")
+            .and_then(|t| serde_json::from_value(t.clone()).ok())
+            .unwrap_or_default();
+        return scope::describe(&scope, &tags);
+    }
+    "cohort".to_string()
+}
+
+/// POST /api/rollouts (operator+) — roll out the CURRENT desired config
+/// to a scope in waves (REV-010 §11.5). The operator names a scope
+/// (§11.4) + optional tag cohort; the server resolves the device set,
+/// pins the current local head, and stages it.
 ///
-/// DECISION (baseline): un-advanced cohort devices are held at
-/// `baselineRevision` (default: the target revision's parent). The
-/// authoring commit has usually already rendered every device at head
-/// by the time the rollout is created (tree.rs render hook), so
-/// creation re-pins cohort devices to the baseline render; devices
-/// that polled in the gap converge back to it. manifestVersion stays
-/// strictly monotonic throughout (§11.5 note — content may revert,
-/// versions never do). Create the rollout promptly after the commit
-/// and no device ever sees the staged content early.
+/// DECISION (baseline): un-advanced cohort devices are held at the head
+/// revision's PARENT (the config just before this one). The authoring/
+/// deploy commit has usually already rendered every device at head, so
+/// creation re-pins cohort devices to that baseline; devices that polled
+/// in the gap converge back to it. manifestVersion stays strictly
+/// monotonic throughout (§11.5 — content may revert, versions never do).
 #[utoipa::path(
     post,
     path = "/api/rollouts",
@@ -1002,7 +1002,7 @@ fn new_rollout_id() -> String {
         (status = 401, description = "Unauthenticated"),
         (status = 403, description = "Below operator role"),
         (status = 409, description = "Conflicting active rollout", body = device_api::ErrorBody),
-        (status = 422, description = "Invalid revision, cohort, waves, or gate", body = device_api::ErrorBody),
+        (status = 422, description = "No config to roll out, empty scope, or invalid waves/gate", body = device_api::ErrorBody),
     ),
 )]
 pub async fn create_route(
@@ -1015,72 +1015,124 @@ pub async fn create_route(
     }
     let author = author_of(&identity);
 
-    // Validate the revision against the store (revisions lock only —
-    // never while holding db, state.rs one-direction rule).
-    let parent = {
+    // Pin the CURRENT desired config (§11.5): the local head is the
+    // rollout revision; its parent is the baseline hold. (Revisions lock
+    // only — never while holding db, state.rs one-direction rule.)
+    let (revision, default_baseline) = {
         let store = state.revisions.lock().expect("revisions mutex poisoned");
-        match store.revision(req.revision) {
-            Ok(rev) => {
-                if rev.stream != revision_store::Stream::Local {
-                    return unprocessable(format!(
-                        "revision {} is not a local-stream revision",
-                        req.revision
-                    ));
-                }
-                rev.parent.unwrap_or(0)
-            }
-            Err(revision_store::Error::UnknownRevision(_)) => {
-                return unprocessable(format!("revision {} does not exist", req.revision));
-            }
+        let head = match store.head(revision_store::Stream::Local) {
+            Ok(h) => h.unwrap_or(0),
             Err(e) => return internal(e),
+        };
+        if head == 0 {
+            return unprocessable(
+                "no desired config to roll out yet — deploy or author something first".to_string(),
+            );
         }
+        let parent = match store.revision(head) {
+            Ok(rev) => rev.parent.unwrap_or(0),
+            Err(e) => return internal(e),
+        };
+        (head, parent)
     };
-    let default_baseline = req.baseline_revision.unwrap_or(parent);
-    if default_baseline >= req.revision || default_baseline < 0 {
-        return unprocessable(format!(
-            "baselineRevision {default_baseline} must be >= 0 and before revision {}",
-            req.revision
-        ));
-    }
-    if let Some(pf) = req.gate.pass_fraction
-        && !(pf > 0.0 && pf <= 1.0)
-    {
-        return unprocessable("gate.passFraction must be in (0, 1]".into());
-    }
-    if req.failure_threshold.is_some_and(|t| t < 1) {
-        return unprocessable("failureThreshold must be >= 1".into());
-    }
-    if req.gate.soak_secs.is_some_and(|s| s < 0)
-        || req.gate.gate_timeout_secs.is_some_and(|s| s < 0)
-        || req.gate.undetermined_allowance.is_some_and(|s| s < 0)
-    {
-        return unprocessable("gate windows/allowance must be >= 0".into());
-    }
 
-    let rollout_id = new_rollout_id();
-    let (cohort, waves) = {
-        let mut conn = state.db.lock().expect("db mutex poisoned");
+    // Resolve scope + tag cohort to a device set (§11.5).
+    let tags = req.tag_cohort.clone().unwrap_or_default();
+    let cohort = {
+        let conn = state.db.lock().expect("db mutex poisoned");
         let selectable = match load_selectable(&conn) {
             Ok(s) => s,
             Err(e) => return internal(e),
         };
-        let cohort = match resolve_cohort(&selectable, &req.cohort) {
-            Ok(c) if c.is_empty() => {
-                return unprocessable("cohort selects no devices".into());
-            }
+        match resolve_scope_cohort(&selectable, &req.scope, &tags) {
             Ok(c) => c,
             Err(msg) => return unprocessable(msg),
-        };
-        let waves = match resolve_waves(&cohort, &req) {
+        }
+    };
+    let description = scope::describe(&req.scope, &tags);
+    let cohort_json = json!({
+        "scope": &req.scope,
+        "tagCohort": &tags,
+        "description": &description,
+    })
+    .to_string();
+    let waves_spec = WaveSpec {
+        waves: &req.waves,
+        strategy: &req.strategy,
+        wave_count: req.wave_count,
+    };
+    create_and_start(
+        &state,
+        &author,
+        revision,
+        default_baseline,
+        cohort,
+        waves_spec,
+        &req.gate,
+        req.failure_threshold,
+        cohort_json,
+        description,
+        None,
+    )
+}
+
+/// Shared create-and-start body (§11.2): validate the gate, resolve
+/// waves, refuse cohort overlap, then insert the rollout + per-device
+/// holds in ONE transaction (Law 3), re-hold the cohort's manifests, and
+/// tick wave 0. Used by both [`create_route`] (forward, from a scope)
+/// and [`rollback_route`] (backward, to the pre-rollout config).
+#[allow(clippy::too_many_arguments)]
+fn create_and_start(
+    state: &AppState,
+    author: &str,
+    revision: i64,
+    default_baseline: i64,
+    cohort: Vec<String>,
+    waves_spec: WaveSpec,
+    gate: &GateSpec,
+    failure_threshold: Option<i64>,
+    cohort_json: String,
+    scope_description: String,
+    rollback_of: Option<&str>,
+) -> Response {
+    if cohort.is_empty() {
+        return unprocessable("scope selects no eligible devices".to_string());
+    }
+    if default_baseline < 0 || revision < 0 {
+        return unprocessable("revisions must be >= 0".to_string());
+    }
+    if default_baseline == revision {
+        return unprocessable(
+            "nothing to roll out: the cohort is already at that config".to_string(),
+        );
+    }
+    if let Some(pf) = gate.pass_fraction
+        && !(pf > 0.0 && pf <= 1.0)
+    {
+        return unprocessable("gate.passFraction must be in (0, 1]".to_string());
+    }
+    if failure_threshold.is_some_and(|t| t < 1) {
+        return unprocessable("failureThreshold must be >= 1".to_string());
+    }
+    if gate.soak_secs.is_some_and(|s| s < 0)
+        || gate.gate_timeout_secs.is_some_and(|s| s < 0)
+        || gate.undetermined_allowance.is_some_and(|s| s < 0)
+    {
+        return unprocessable("gate windows/allowance must be >= 0".to_string());
+    }
+
+    let rollout_id = new_rollout_id();
+    let waves = {
+        let mut conn = state.db.lock().expect("db mutex poisoned");
+        let waves = match resolve_waves(&cohort, &waves_spec) {
             Ok(w) => w,
             Err(msg) => return unprocessable(msg),
         };
 
         // §11.1: at most one active rollout may target a device's
         // manifest — overlap with an active/paused rollout is rejected
-        // (fail, not queue — implementation choice, recorded here).
-        // Aborted/completed rollouts do not block; a new rollout takes
-        // over their surviving holds (rollback-as-new-rollout, §11.5).
+        // (fail, not queue). Aborted/completed rollouts do not block; a
+        // new rollout takes over their surviving holds (rollback, §11.5).
         let overlap: Option<(String, String)> = {
             let placeholders = vec!["?"; cohort.len()].join(",");
             let sql = format!(
@@ -1106,8 +1158,7 @@ pub async fn create_route(
         }
 
         // One transaction: definition + waves + per-device assignment +
-        // baseline holds (Law 3 — the rollout exists whole or not at
-        // all).
+        // baseline holds (Law 3 — the rollout exists whole or not at all).
         let created = (|| -> rusqlite::Result<()> {
             let now = now_secs();
             let tx = conn.transaction()?;
@@ -1119,17 +1170,18 @@ pub async fn create_route(
                  VALUES (?1, ?2, 'active', 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
                 params![
                     rollout_id,
-                    req.revision,
-                    serde_json::to_string(&req.cohort).expect("cohort serializes"),
-                    req.gate.soak_secs.unwrap_or(DEFAULT_SOAK_SECS),
-                    req.gate.gate_timeout_secs.unwrap_or(DEFAULT_GATE_TIMEOUT_SECS),
-                    req.gate.pass_fraction.unwrap_or(DEFAULT_PASS_FRACTION),
-                    req.gate.undetermined_allowance,
-                    req.failure_threshold.unwrap_or(DEFAULT_FAILURE_THRESHOLD),
+                    revision,
+                    cohort_json,
+                    gate.soak_secs.unwrap_or(DEFAULT_SOAK_SECS),
+                    gate.gate_timeout_secs.unwrap_or(DEFAULT_GATE_TIMEOUT_SECS),
+                    gate.pass_fraction.unwrap_or(DEFAULT_PASS_FRACTION),
+                    gate.undetermined_allowance,
+                    failure_threshold.unwrap_or(DEFAULT_FAILURE_THRESHOLD),
                     author,
                     now,
                 ],
             )?;
+            let detail = rollback_of.map(|id| format!("rollback of {id}"));
             for (idx, wave) in waves.iter().enumerate() {
                 tx.execute(
                     "INSERT INTO rollout_waves (rollout_id, wave_idx, state)
@@ -1137,9 +1189,9 @@ pub async fn create_route(
                     params![rollout_id, idx as i64],
                 )?;
                 for device_id in wave {
-                    // Baseline = wherever the device currently stands:
-                    // an existing hold (taken over from an aborted
-                    // rollout — its revision is kept) or the default.
+                    // Baseline = wherever the device currently stands: an
+                    // existing hold (taken over from an aborted rollout —
+                    // its revision is kept) or the default.
                     let existing: Option<i64> = tx
                         .query_row(
                             "SELECT revision FROM device_render_targets WHERE device_id = ?1",
@@ -1165,21 +1217,21 @@ pub async fn create_route(
                     )?;
                 }
             }
-            record_transition(&tx, &rollout_id, "created", &author, None)?;
+            record_transition(&tx, &rollout_id, "created", author, detail.as_deref())?;
             tx.commit()
         })();
         if let Err(e) = created {
             return internal(e);
         }
-        (cohort, waves)
+        waves
     };
 
-    // Re-hold render pass: any cohort device the authoring commit
-    // already bumped to head comes back to its baseline manifest
-    // before wave math starts. Best-effort — the device's next poll
-    // renders on demand either way.
+    // Re-hold render pass: any cohort device the authoring/deploy commit
+    // already bumped to head comes back to its baseline manifest before
+    // wave math starts. Best-effort — the device's next poll renders on
+    // demand either way.
     for device_id in &cohort {
-        match render::ensure_current(&state, device_id) {
+        match render::ensure_current(state, device_id) {
             Ok(render::Outcome::Updated(_)) => state.channels.nudge_desired_state(device_id),
             Ok(_) => {}
             Err(e) => warn!(device = %device_id, error = %e, "baseline re-hold render failed"),
@@ -1188,16 +1240,18 @@ pub async fn create_route(
 
     // Start wave 0 without waiting for the interval task (which is not
     // running under tests / may be a tick away).
-    tick_logged(&state);
+    tick_logged(state);
 
     (
         StatusCode::CREATED,
         Json(json!({
             "rolloutId": rollout_id,
-            "revision": req.revision,
+            "revision": revision,
             "state": "active",
             "cohort": cohort,
             "waves": waves,
+            "scopeDescription": scope_description,
+            "rollbackOf": rollback_of,
         })),
     )
         .into_response()
@@ -1215,6 +1269,10 @@ pub struct CreateRolloutResponse {
     pub cohort: Vec<String>,
     /// The wave partition (device ids per wave).
     pub waves: Vec<Vec<String>>,
+    /// Human scope phrasing (§11.5: describe scope in words).
+    pub scope_description: String,
+    /// Present when this rollout is a rollback of another (§11.5).
+    pub rollback_of: Option<String>,
 }
 
 /// One `GET /api/rollouts` entry.
@@ -1226,6 +1284,8 @@ pub struct RolloutSummary {
     /// `active` | `paused` | `aborted` | `completed`.
     pub state: String,
     pub current_wave: i64,
+    /// Human scope phrasing (§11.5), e.g. `Site plant-a tagged env=prod`.
+    pub scope_description: String,
     pub pause_reason: Option<String>,
     pub created_by: String,
     pub created_at: i64,
@@ -1279,9 +1339,12 @@ pub struct RolloutDetail {
     pub revision: i64,
     pub state: String,
     pub current_wave: i64,
-    /// The cohort spec as recorded at creation.
+    /// The cohort spec as recorded at creation (`{scope, tagCohort,
+    /// description}`).
     #[schema(value_type = Object)]
     pub cohort: serde_json::Value,
+    /// Human scope phrasing (§11.5), e.g. `Site plant-a`.
+    pub scope_description: String,
     pub gate: GatePolicy,
     pub failure_threshold: i64,
     pub pause_reason: Option<String>,
@@ -1325,23 +1388,25 @@ pub async fn list_route(State(state): State<AppState>, identity: Identity) -> Re
     let result = (|| -> rusqlite::Result<Vec<serde_json::Value>> {
         let mut stmt = conn.prepare(
             "SELECT r.rollout_id, r.revision, r.state, r.current_wave, r.pause_reason,
-                    r.created_by, r.created_at, r.updated_at,
+                    r.created_by, r.created_at, r.updated_at, r.cohort_json,
                     (SELECT COUNT(*) FROM rollout_waves w WHERE w.rollout_id = r.rollout_id),
                     (SELECT COUNT(*) FROM rollout_devices d WHERE d.rollout_id = r.rollout_id)
              FROM rollouts r ORDER BY r.created_at DESC, r.rollout_id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
+            let cohort_json: String = row.get(8)?;
             Ok(json!({
                 "rolloutId": row.get::<_, String>(0)?,
                 "revision": row.get::<_, i64>(1)?,
                 "state": row.get::<_, String>(2)?,
                 "currentWave": row.get::<_, i64>(3)?,
+                "scopeDescription": scope_description_of(&cohort_json),
                 "pauseReason": row.get::<_, Option<String>>(4)?,
                 "createdBy": row.get::<_, String>(5)?,
                 "createdAt": row.get::<_, i64>(6)?,
                 "updatedAt": row.get::<_, i64>(7)?,
-                "waveCount": row.get::<_, i64>(8)?,
-                "deviceCount": row.get::<_, i64>(9)?,
+                "waveCount": row.get::<_, i64>(9)?,
+                "deviceCount": row.get::<_, i64>(10)?,
             }))
         })?;
         rows.collect()
@@ -1454,6 +1519,7 @@ pub async fn status_route(
             "currentWave": r.current_wave,
             "cohort": serde_json::from_str::<serde_json::Value>(&cohort_json)
                 .unwrap_or(serde_json::Value::Null),
+            "scopeDescription": scope_description_of(&cohort_json),
             "gate": {
                 "soakSecs": r.soak_secs,
                 "gateTimeoutSecs": r.gate_timeout_secs,
@@ -1636,6 +1702,136 @@ pub async fn abort_route(
     transition_route(state, identity, rollout_id, "aborted").await
 }
 
+/// POST /api/rollouts/{id}/rollback (operator+) — start a NEW rollout
+/// returning the cohort to its pre-rollout config (REV-010 §11.5:
+/// rollback is a new rollout of the previous config, NEVER "select
+/// revision N"). The original rollout is aborted first (if still
+/// active/paused) so its holds survive to be taken over; the rollback
+/// advances the same cohort to the config the original held them at
+/// before it ran. manifestVersion still only ever climbs (§11.5).
+#[utoipa::path(
+    post,
+    path = "/api/rollouts/{rollout_id}/rollback",
+    tag = "rollouts",
+    params(("rollout_id" = String, Path, description = "Rollout id to roll back")),
+    responses(
+        (status = 201, description = "Rollback rollout created and started", body = CreateRolloutResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown rollout", body = device_api::ErrorBody),
+        (status = 409, description = "Cohort already targeted by another active rollout", body = device_api::ErrorBody),
+        (status = 422, description = "Nothing to roll back to", body = device_api::ErrorBody),
+    ),
+)]
+pub async fn rollback_route(
+    State(state): State<AppState>,
+    identity: Identity,
+    Path(rollout_id): Path<String>,
+) -> Response {
+    if let Err(status) = require_at_least(&state, &identity, Role::Operator) {
+        return status.into_response();
+    }
+    let author = author_of(&identity);
+
+    // Read the original rollout: its gate policy (the rollback inherits
+    // it), its cohort, and its pre-rollout baseline (the config the
+    // cohort held before it ran). MIN over per-device baselines is that
+    // common prior config (uniform for a fresh rollout; the earliest if
+    // some devices were taken over from an older aborted rollout).
+    let (orig, cohort, target): (RolloutRow, Vec<String>, Option<i64>) = {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        let Some(orig) = (match load_rollout(&conn, &rollout_id) {
+            Ok(o) => o,
+            Err(e) => return internal(e),
+        }) else {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "unknown rollout" })))
+                .into_response();
+        };
+        let result = (|| -> rusqlite::Result<(Vec<String>, Option<i64>)> {
+            let target: Option<i64> = conn.query_row(
+                "SELECT MIN(baseline_revision) FROM rollout_devices WHERE rollout_id = ?1",
+                params![rollout_id],
+                |r| r.get(0),
+            )?;
+            let mut stmt = conn.prepare(
+                "SELECT device_id FROM rollout_devices WHERE rollout_id = ?1 ORDER BY device_id",
+            )?;
+            let cohort: Vec<String> = stmt
+                .query_map(params![rollout_id], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            Ok((cohort, target))
+        })();
+        match result {
+            Ok((cohort, target)) => (orig, cohort, target),
+            Err(e) => return internal(e),
+        }
+    };
+    let orig_state = orig.state.clone();
+
+    if cohort.is_empty() {
+        return unprocessable("rollout has no devices to roll back".to_string());
+    }
+    let target = target.unwrap_or(0);
+
+    // Abort the original (if live) so its holds survive (§11.2: abort
+    // retains holds and records) and no longer block the cohort overlap
+    // check for the rollback.
+    if orig_state == "active" || orig_state == "paused" {
+        match human_transition(&state, &rollout_id, &author, "aborted") {
+            Ok(Ok((wave, phase))) => emit_phase(&state, &rollout_id, wave, phase),
+            Ok(Err(resp)) => return resp,
+            Err(e) => return internal(e),
+        }
+    }
+
+    // Default hold for the rollback = current head (devices with a
+    // surviving hold from the aborted original ignore it — they advance
+    // from where they are to `target`).
+    let default_baseline = {
+        let store = state.revisions.lock().expect("revisions mutex poisoned");
+        match store.head(revision_store::Stream::Local) {
+            Ok(h) => h.unwrap_or(0),
+            Err(e) => return internal(e),
+        }
+    };
+
+    let scope = Scope::Devices { ids: cohort.clone() };
+    let description = format!("{} (rollback)", scope.label());
+    let cohort_json = json!({
+        "scope": &scope,
+        "tagCohort": {},
+        "description": &description,
+        "rollbackOf": &rollout_id,
+    })
+    .to_string();
+    let waves_spec = WaveSpec {
+        waves: &None,
+        strategy: &None,
+        wave_count: None,
+    };
+    // Inherit the original rollout's gate policy — the rollback behaves
+    // like the rollout it reverses (§11.5).
+    let gate = GateSpec {
+        soak_secs: Some(orig.soak_secs),
+        gate_timeout_secs: Some(orig.gate_timeout_secs),
+        pass_fraction: Some(orig.pass_fraction),
+        undetermined_allowance: orig.undetermined_allowance,
+    };
+    create_and_start(
+        &state,
+        &author,
+        target,
+        default_baseline,
+        cohort,
+        waves_spec,
+        &gate,
+        Some(orig.failure_threshold),
+        cohort_json,
+        description,
+        Some(&rollout_id),
+    )
+}
+
 // ---------------------------------------------------------------------
 // Unit tests (pure resolution logic; the engine is covered end-to-end
 // in tests/rollout_flow.rs)
@@ -1648,9 +1844,9 @@ mod tests {
     fn dev(id: &str, site: Option<&str>, labels: &[(&str, &str)]) -> SelectableDevice {
         SelectableDevice {
             device_id: id.to_string(),
-            class: None,
-            region: None,
+            fleet: None,
             site: site.map(str::to_string),
+            r#type: None,
             labels: labels
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1658,70 +1854,55 @@ mod tests {
         }
     }
 
-    fn cohort_of(devices: &[SelectableDevice], spec: &CohortSpec) -> Vec<String> {
-        resolve_cohort(devices, spec).unwrap()
+    fn cohort_of(devices: &[SelectableDevice], scope: &Scope, tags: &[(&str, &str)]) -> Vec<String> {
+        let tags: BTreeMap<String, String> =
+            tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        resolve_scope_cohort(devices, scope, &tags).unwrap()
     }
 
     #[test]
-    fn cohort_selectors_union_and_validate() {
+    fn scope_cohort_resolves_and_validates() {
         let devices = vec![
             dev("a", Some("plant-1"), &[("env", "prod")]),
             dev("b", Some("plant-2"), &[("env", "prod")]),
             dev("c", Some("plant-1"), &[("env", "dev")]),
         ];
-        // explicit list
+        // scope: all devices
+        assert_eq!(cohort_of(&devices, &Scope::All, &[]), ["a", "b", "c"]);
+        // scope: a site
         assert_eq!(
-            cohort_of(&devices, &CohortSpec { devices: vec!["b".into()], ..Default::default() }),
+            cohort_of(&devices, &Scope::Site { name: "plant-1".into() }, &[]),
+            ["a", "c"]
+        );
+        // scope: explicit device list
+        assert_eq!(
+            cohort_of(&devices, &Scope::Devices { ids: vec!["b".into()] }, &[]),
             ["b"]
         );
-        // tree selection, with and without the numeric prefix
-        for layer in ["20-site.plant-1", "site.plant-1"] {
-            assert_eq!(
-                cohort_of(
-                    &devices,
-                    &CohortSpec { layers: vec![layer.into()], ..Default::default() }
-                ),
-                ["a", "c"]
-            );
-        }
-        // labels select cohorts (D12)
+        // tag cohort narrows the scope (D12: tags select, never configure)
+        assert_eq!(cohort_of(&devices, &Scope::All, &[("env", "prod")]), ["a", "b"]);
         assert_eq!(
-            cohort_of(
-                &devices,
-                &CohortSpec {
-                    labels: [("env".to_string(), "prod".to_string())].into(),
-                    ..Default::default()
-                }
-            ),
-            ["a", "b"]
+            cohort_of(&devices, &Scope::Site { name: "plant-1".into() }, &[("env", "prod")]),
+            ["a"]
         );
-        // union, deduped + sorted
-        assert_eq!(
-            cohort_of(
-                &devices,
-                &CohortSpec {
-                    devices: vec!["c".into()],
-                    labels: [("env".to_string(), "prod".to_string())].into(),
-                    ..Default::default()
-                }
-            ),
-            ["a", "b", "c"]
-        );
-        // unknown device refused
+        // unknown device in an explicit scope is refused
         assert!(
-            resolve_cohort(
+            resolve_scope_cohort(
                 &devices,
-                &CohortSpec { devices: vec!["nope".into()], ..Default::default() }
+                &Scope::Devices { ids: vec!["nope".into()] },
+                &BTreeMap::new()
             )
             .is_err()
         );
-        // unknown selector refused
+        // an empty result is not an error here (the create path 422s it)
         assert!(
-            resolve_cohort(
+            resolve_scope_cohort(
                 &devices,
-                &CohortSpec { layers: vec!["cluster.x".into()], ..Default::default() }
+                &Scope::Fleet { name: "ghost".into() },
+                &BTreeMap::new()
             )
-            .is_err()
+            .unwrap()
+            .is_empty()
         );
     }
 
@@ -1742,58 +1923,49 @@ mod tests {
         assert!(s(&["0"], 5).is_err());
     }
 
-    fn req_with(waves: Option<Vec<Vec<String>>>, count: Option<u32>) -> CreateRequest {
-        CreateRequest {
-            revision: 1,
-            cohort: CohortSpec::default(),
-            waves,
-            strategy: None,
-            wave_count: count,
-            gate: GateSpec::default(),
-            failure_threshold: None,
-            baseline_revision: None,
-        }
+    /// Build a [`WaveSpec`] borrowing the given owned option values.
+    fn wave_spec<'a>(
+        waves: &'a Option<Vec<Vec<String>>>,
+        count: Option<u32>,
+    ) -> WaveSpec<'a> {
+        WaveSpec { waves, strategy: &None, wave_count: count }
     }
 
     #[test]
     fn waves_default_explicit_and_count() {
         let cohort: Vec<String> = ["a", "b", "c", "d", "e"].map(String::from).to_vec();
         // default: one wave
-        assert_eq!(resolve_waves(&cohort, &req_with(None, None)).unwrap(), vec![cohort.clone()]);
+        let none = None;
+        assert_eq!(
+            resolve_waves(&cohort, &wave_spec(&none, None)).unwrap(),
+            vec![cohort.clone()]
+        );
         // count: near-even split
         assert_eq!(
-            resolve_waves(&cohort, &req_with(None, Some(2))).unwrap(),
+            resolve_waves(&cohort, &wave_spec(&none, Some(2))).unwrap(),
             vec![vec!["a", "b", "c"], vec!["d", "e"]]
                 .into_iter()
                 .map(|w| w.into_iter().map(String::from).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
         );
         // explicit must partition
-        let ok = resolve_waves(
-            &cohort,
-            &req_with(Some(vec![vec!["b".into()], vec!["a".into(), "c".into(), "d".into(), "e".into()]]), None),
+        let explicit = Some(vec![
+            vec!["b".into()],
+            vec!["a".into(), "c".into(), "d".into(), "e".into()],
+        ]);
+        assert!(resolve_waves(&cohort, &wave_spec(&explicit, None)).is_ok());
+        let partial = Some(vec![vec!["a".to_string()]]);
+        assert!(
+            resolve_waves(&cohort, &wave_spec(&partial, None)).is_err(),
+            "waves must cover the whole cohort"
         );
-        assert!(ok.is_ok());
-        let missing = resolve_waves(&cohort, &req_with(Some(vec![vec!["a".into()]]), None));
-        assert!(missing.is_err(), "waves must cover the whole cohort");
-        let dup = resolve_waves(
-            &cohort,
-            &req_with(
-                Some(vec![
-                    vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
-                    vec!["a".into()],
-                ]),
-                None,
-            ),
+        let dup = Some(vec![
+            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
+            vec!["a".into()],
+        ]);
+        assert!(
+            resolve_waves(&cohort, &wave_spec(&dup, None)).is_err(),
+            "a device may appear in exactly one wave"
         );
-        assert!(dup.is_err(), "a device may appear in exactly one wave");
-    }
-
-    #[test]
-    fn layer_label_strips_numeric_prefix_only() {
-        assert_eq!(layer_label("20-site.plant"), "site.plant");
-        assert_eq!(layer_label("site.plant"), "site.plant");
-        assert_eq!(layer_label("fleet"), "fleet");
-        assert_eq!(layer_label("00-fleet"), "fleet");
     }
 }

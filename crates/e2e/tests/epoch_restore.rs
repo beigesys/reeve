@@ -66,9 +66,9 @@ async fn restore_bumps_epoch_and_agent_accepts_what_would_be_a_rollback() {
     srv.state.durability.snapshot_now().await.unwrap().expect("generation cut");
 
     // Now push the agent's floor AHEAD: two real changes, two accepts.
-    author.put_layer("30-device.dev-1", &[("apps/web/params.yaml", "greeting: change-1\n")]).await;
+    author.put_layer("40-device.dev-1", &[("apps/web/params.yaml", "greeting: change-1\n")]).await;
     let (v1, _) = poll_accept(agent_data.path(), &srv.base(), &token).await;
-    author.put_layer("30-device.dev-1", &[("apps/web/params.yaml", "greeting: change-2\n")]).await;
+    author.put_layer("40-device.dev-1", &[("apps/web/params.yaml", "greeting: change-2\n")]).await;
     let (v_floor, _) = poll_accept(agent_data.path(), &srv.base(), &token).await;
     assert_eq!(v_floor.epoch(), 0);
     assert!(v_floor > v1 && v1 > v_snapshot, "floor advanced past the snapshot counter");
@@ -103,7 +103,7 @@ async fn restore_bumps_epoch_and_agent_accepts_what_would_be_a_rollback() {
     // under the fenced epoch on the next content change. The restored
     // counter is back at C0, so this new manifest packs (epoch 1, ~C0+1)
     // — a counter BELOW the agent's floor (epoch 0, C_floor).
-    author2.put_layer("30-device.dev-1", &[("apps/web/params.yaml", "greeting: after-restore\n")]).await;
+    author2.put_layer("40-device.dev-1", &[("apps/web/params.yaml", "greeting: after-restore\n")]).await;
 
     // The SAME agent polls the restored server. Without fencing this is
     // a rollback (lower counter) and MUST be rejected; WITH the higher

@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Pencil, Pin } from 'lucide-react'
 import { useMe } from '@/api/endpoints/auth/auth'
 import { useDetail, useJournal } from '@/api/endpoints/devices/devices'
-import type { DeviceDetail, JournalEntry, RenderProvenance } from '@/api/model'
+import type { DeviceDetail, JournalEntry } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -25,10 +25,10 @@ import {
 import { DeploymentStateBadge } from '@/components/deployment-state-badge'
 import { DeviceTerminal } from '@/components/device-terminal'
 import { PresenceBadge } from '@/components/presence-badge'
-import { fmtDigest, fmtRfc3339, fmtUnix } from '@/lib/format'
+import { fmtRfc3339, fmtUnix } from '@/lib/format'
 import { usePollInterval } from '@/lib/sse'
 
-export const Route = createFileRoute('/_app/devices/$device-id')({
+export const Route = createFileRoute('/_app/devices/$device-id/')({
   component: DeviceDetailPage,
 })
 
@@ -46,38 +46,49 @@ function Mono({ children }: { children: ReactNode }) {
 }
 
 function OverviewTab({ device }: { device: DeviceDetail }) {
+  const tags = Object.entries(device.tags)
+  const configApps = device.render?.apps ?? []
   return (
     <div className="flex flex-col gap-4">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Metadata</CardTitle>
+          <CardTitle className="text-base">Details</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <Field label="Display name">{device.displayName ?? '—'}</Field>
+          <Field label="Hostname">{device.hostname}</Field>
           <Field label="Device id">
             <Mono>{device.deviceId}</Mono>
           </Field>
           <Field label="Architecture">{device.arch}</Field>
+          <Field label="Fleet">{device.fleet ?? '—'}</Field>
+          <Field label="Site">{device.site ?? '—'}</Field>
+          <Field label="Device type">{device.type ?? '—'}</Field>
+          <Field label="Pinned">
+            {device.pinned ? (
+              <Badge variant="outline" className="gap-1 font-normal">
+                <Pin className="size-3" /> pinned
+              </Badge>
+            ) : (
+              '—'
+            )}
+          </Field>
           <Field label="Agent version">{device.agentVersion}</Field>
           <Field label="Enrolled">{fmtUnix(device.enrolledAt)}</Field>
-          <Field label="Class">{device.class ?? '—'}</Field>
-          <Field label="Region">{device.region ?? '—'}</Field>
-          <Field label="Site">{device.site ?? '—'}</Field>
-          <Field label="Tier origin">
-            {device.tierOrigin ?? 'enrolled here'}
-          </Field>
           <Field label="Last seen">{fmtUnix(device.lastSeenAt)}</Field>
-          <Field label="Labels">
-            {Object.keys(device.labels).length === 0 ? (
+          <Field label="Tags">
+            {tags.length === 0 ? (
               '—'
             ) : (
               <span className="flex flex-wrap gap-1">
-                {Object.entries(device.labels).map(([k, v]) => (
+                {tags.map(([k, v]) => (
                   <Badge
                     key={k}
                     variant="secondary"
                     className="font-mono text-xs font-normal"
                   >
-                    {k}={String(v)}
+                    {k}
+                    {v ? `=${v}` : ''}
                   </Badge>
                 ))}
               </span>
@@ -100,7 +111,7 @@ function OverviewTab({ device }: { device: DeviceDetail }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Deployment id</TableHead>
+                  <TableHead>Deployment</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Observed</TableHead>
                   <TableHead>Received</TableHead>
@@ -129,82 +140,42 @@ function OverviewTab({ device }: { device: DeviceDetail }) {
         </CardContent>
       </Card>
 
-      <RenderProvenanceCard render={device.render ?? null} />
-    </div>
-  )
-}
-
-/**
- * Render provenance: which tree revision this device's State Manifest was
- * rendered from, the packed manifestVersion decoded to (epoch, counter),
- * the bundle digest the agent pulls, and each app's secrets_version.
- */
-function RenderProvenanceCard({ render }: { render: RenderProvenance | null }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Render provenance</CardTitle>
-        <CardDescription>
-          How this device's current State Manifest was produced.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {!render ? (
-          <p className="text-sm text-muted-foreground">
-            Not rendered yet — no State Manifest exists for this device.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <Field label="Rendered revision (local stream)">
-                {render.renderedRevision}
-              </Field>
-              <Field label="Manifest version (packed u64)">
-                <Mono>{render.manifestVersion}</Mono>
-              </Field>
-              <Field label="Epoch / counter (decoded)">
-                {render.epoch} / {render.counter}
-              </Field>
-              <Field label="Render generation">{render.generation}</Field>
-              <Field label="Content digest">
-                <Mono>{fmtDigest(render.contentDigest)}</Mono>
-              </Field>
-              <Field label="Bundle digest">
-                <Mono>{fmtDigest(render.bundleDigest)}</Mono>
-              </Field>
-              <Field label="ETag">
-                <Mono>{render.etag}</Mono>
-              </Field>
-              <Field label="Updated">{fmtUnix(render.updatedAt)}</Field>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Configuration</CardTitle>
+          <CardDescription>
+            The apps this device is currently assigned.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!device.render ? (
+            <p className="text-sm text-muted-foreground">
+              No configuration has been prepared for this device yet.
+            </p>
+          ) : configApps.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No apps assigned.{' '}
+              <span className="text-muted-foreground/80">
+                Last updated {fmtUnix(device.render.updatedAt)}.
+              </span>
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <span className="flex flex-wrap gap-1">
+                {configApps.map((a) => (
+                  <Badge key={a.appId} variant="secondary" className="font-normal">
+                    {a.appId}
+                  </Badge>
+                ))}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Last updated {fmtUnix(device.render.updatedAt)}.
+              </span>
             </div>
-            {render.apps.length > 0 && (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>App</TableHead>
-                    <TableHead>Deployment id</TableHead>
-                    <TableHead>Secrets version</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {render.apps.map((a) => (
-                    <TableRow key={a.appId}>
-                      <TableCell>{a.appId}</TableCell>
-                      <TableCell>
-                        <Mono>{a.deploymentId ?? '—'}</Mono>
-                      </TableCell>
-                      <TableCell>
-                        <Mono>{a.secrets_version ?? '—'}</Mono>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   )
 }
 
@@ -292,9 +263,7 @@ function JournalTab({ deviceId }: { deviceId: string }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Status journal</CardTitle>
-        <CardDescription>
-          Newest first.
-        </CardDescription>
+        <CardDescription>Newest first.</CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         {cursors.map((cursor, i) => (
@@ -334,14 +303,35 @@ function DeviceDetailPage() {
         {device && (
           <>
             <h1 className="text-xl font-semibold tracking-tight">
-              {device.hostname}
+              {device.displayName ?? device.hostname}
             </h1>
             <PresenceBadge presence={device.presence} />
+            {device.pinned && (
+              <Badge variant="outline" className="gap-1 font-normal">
+                <Pin className="size-3" /> pinned
+              </Badge>
+            )}
             {device.stale && (
-              <Badge variant="outline" className="font-normal text-muted-foreground">
+              <Badge
+                variant="outline"
+                className="font-normal text-muted-foreground"
+              >
                 stale identity
               </Badge>
             )}
+            <div className="ml-auto">
+              {operator && (
+                <Button size="sm" asChild>
+                  <Link
+                    to="/devices/$device-id/edit"
+                    params={{ 'device-id': deviceId }}
+                  >
+                    <Pencil className="size-4" />
+                    Edit
+                  </Link>
+                </Button>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -368,8 +358,8 @@ function DeviceDetailPage() {
               <CardHeader>
                 <CardTitle className="text-base">Remote terminal</CardTitle>
                 <CardDescription>
-                  Disabled by default; enabled only via desired state (a tree
-                  revision). Sessions are short-lived and audited.
+                  Disabled by default; enabled only via a configuration change.
+                  Sessions are short-lived and audited.
                 </CardDescription>
               </CardHeader>
               <CardContent>

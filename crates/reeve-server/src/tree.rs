@@ -217,12 +217,12 @@ impl From<Revision> for RevisionInfo {
 // Shared plumbing
 // ---------------------------------------------------------------------
 
-fn internal(e: impl std::fmt::Display) -> Response {
+pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
     warn!(error = %e, "tree route internal error");
     StatusCode::INTERNAL_SERVER_ERROR.into_response()
 }
 
-fn unprocessable(msg: impl std::fmt::Display) -> Response {
+pub(crate) fn unprocessable(msg: impl std::fmt::Display) -> Response {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(json!({ "error": msg.to_string() })),
@@ -230,7 +230,7 @@ fn unprocessable(msg: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
-fn store_err(e: revision_store::Error) -> Response {
+pub(crate) fn store_err(e: revision_store::Error) -> Response {
     match e {
         revision_store::Error::UnknownRevision(id) => (
             StatusCode::NOT_FOUND,
@@ -299,7 +299,7 @@ fn delegated_to(conn: &rusqlite::Connection, tree_path: &str) -> rusqlite::Resul
 }
 
 /// 403 when `tree_path` belongs to a child tier (see [`delegated_to`]).
-fn check_not_delegated(state: &AppState, tree_path: &str) -> Result<(), Box<Response>> {
+pub(crate) fn check_not_delegated(state: &AppState, tree_path: &str) -> Result<(), Box<Response>> {
     let conn = state.db.lock().expect("db mutex poisoned");
     match delegated_to(&conn, tree_path) {
         Ok(None) => Ok(()),
@@ -319,7 +319,7 @@ fn check_not_delegated(state: &AppState, tree_path: &str) -> Result<(), Box<Resp
     }
 }
 
-fn author_of(identity: &Identity) -> String {
+pub(crate) fn author_of(identity: &Identity) -> String {
     match identity {
         Identity::Human { user, .. } => user.clone(),
         // REEVE_AUTH=none: anonymous acts as admin (D1).
@@ -356,12 +356,36 @@ fn commit_subtree(
     message: &str,
 ) -> Result<(RevisionId, bool), revision_store::Error> {
     debug_assert!(prefix.ends_with('/'));
+    commit_replacements(store, &[(prefix.to_string(), files)], author, message)
+}
+
+/// Full tree paths -> content for one subtree replacement.
+pub(crate) type LayerFiles = Vec<(String, Vec<u8>)>;
+/// One `(prefix, files)` subtree replacement for [`commit_replacements`]
+/// (`prefix` ends with `/`; empty `files` removes the subtree).
+pub(crate) type Replacement = (String, LayerFiles);
+
+/// Replace several subtrees at once (each `prefix` trailing `/`, `files`
+/// already full tree paths under it) in ONE store commit — atomic (Law
+/// 3), idempotent against head (D14). Every path under any prefix is
+/// dropped and re-supplied from `files`; all other head paths carry
+/// forward. Deploy-to-scope (deploy.rs) uses this to author the same
+/// app into N device layers in a single revision; an empty `files` for a
+/// prefix removes that subtree wholesale (undeploy). Returns
+/// `(revision, changed)`.
+pub(crate) fn commit_replacements(
+    store: &mut RevisionStore,
+    replacements: &[Replacement],
+    author: &str,
+    message: &str,
+) -> Result<(RevisionId, bool), revision_store::Error> {
+    debug_assert!(replacements.iter().all(|(p, _)| p.ends_with('/')));
     let head = store.head(Stream::Local)?;
     let mut manifest: Vec<(String, Vec<u8>)> = Vec::new();
     if let Some(head_id) = head {
         for (path, digest) in store.tree_at(head_id)? {
-            if path.starts_with(prefix) {
-                continue; // replaced wholesale by this PUT
+            if replacements.iter().any(|(prefix, _)| path.starts_with(prefix)) {
+                continue; // replaced (or removed) wholesale by this commit
             }
             let content = store.blob(&digest)?.ok_or_else(|| {
                 revision_store::Error::Corrupt(format!("missing blob {digest} for {path}"))
@@ -369,7 +393,9 @@ fn commit_subtree(
             manifest.push((path, content));
         }
     }
-    manifest.extend(files);
+    for (_, files) in replacements {
+        manifest.extend(files.iter().cloned());
+    }
     let id = store.commit(manifest, author, message, Stream::Local)?;
     Ok((id, head != Some(id)))
 }
@@ -615,7 +641,7 @@ pub async fn list_revisions(
 
 /// Both streams' chains, newest first. Chain-walk from each head — the
 /// parent pointers ARE the stream (append-only, D13).
-fn history(store: &RevisionStore, limit: usize) -> Result<Vec<Revision>, revision_store::Error> {
+pub(crate) fn history(store: &RevisionStore, limit: usize) -> Result<Vec<Revision>, revision_store::Error> {
     let mut out = Vec::new();
     for stream in [Stream::Local, Stream::Upstream] {
         let mut cursor = store.head(stream)?;

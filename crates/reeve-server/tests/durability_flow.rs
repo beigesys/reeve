@@ -72,7 +72,7 @@ async fn snapshot_restore_roundtrip() {
         .lock()
         .unwrap()
         .commit(
-            [("layers/00-fleet/app.yml", b"x: 1\n".as_slice())],
+            [("layers/00-all/app.yml", b"x: 1\n".as_slice())],
             "test",
             "seed",
             revision_store::Stream::Local,
@@ -350,7 +350,7 @@ async fn restore_at_bootstrap_e2e_with_epoch_fencing() {
         .lock()
         .unwrap()
         .commit(
-            [("layers/00-fleet/x.yml", b"a: 1\n".as_slice())],
+            [("layers/00-all/x.yml", b"a: 1\n".as_slice())],
             "test",
             "seed",
             revision_store::Stream::Local,

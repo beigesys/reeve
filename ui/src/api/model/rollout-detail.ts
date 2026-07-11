@@ -14,7 +14,10 @@ import type { WaveStatus } from './wave-status';
  * `GET /api/rollouts/{rollout_id}` body (§11.6 full status).
  */
 export interface RolloutDetail {
-  /** The cohort spec as recorded at creation. */
+  /**
+     * The cohort spec as recorded at creation (`{scope, tagCohort,
+     * description}`).
+     */
   cohort: RolloutDetailCohort;
   createdAt: number;
   createdBy: string;
@@ -27,6 +30,8 @@ export interface RolloutDetail {
   pinnedUnaffected: number;
   revision: number;
   rolloutId: string;
+  /** Human scope phrasing (§11.5), e.g. `Site plant-a`. */
+  scopeDescription: string;
   state: string;
   transitions: TransitionEntry[];
   updatedAt: number;

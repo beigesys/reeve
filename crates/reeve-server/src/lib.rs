@@ -16,12 +16,14 @@ pub mod completions;
 pub mod config;
 pub mod db;
 pub mod delivery;
+pub mod deploy;
 pub mod devices;
 pub mod events;
 pub mod device_tokens;
 pub mod durability;
 pub mod enroll;
 pub mod ext;
+pub mod history;
 pub mod ingest;
 pub mod init;
 pub mod join_tokens;
@@ -31,6 +33,7 @@ pub mod ownership;
 pub mod presence;
 pub mod render;
 pub mod router;
+pub mod scope;
 pub mod specdocs;
 pub mod state;
 pub mod tree;
@@ -86,7 +89,7 @@ pub fn bootstrap(cfg: Config) -> anyhow::Result<AppState> {
         Some(fed) => ownership::Ownership::Gateway {
             owned_prefixes: vec![
                 format!("layers/20-site.{}", fed.site),
-                "layers/30-device.".to_string(),
+                "layers/40-device.".to_string(),
             ],
         },
         None => ownership::Ownership::Root,

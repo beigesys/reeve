@@ -45,10 +45,31 @@ pub fn build(state: AppState) -> Router {
         .route("/api/tree/revisions/{id}/files/{*path}", get(tree::file_at))
         .route("/api/tree/diff/{a}/{b}", get(tree::diff))
         .route("/api/tree/blame/{*path}", get(tree::blame))
+        // Deploy-to-scope (REV-010 §11.4): deploy/undeploy a stack to a
+        // scope through the SAME authoring/ownership path as PUT
+        // /api/tree/layers — operator+, enforced in the handlers.
+        .route("/api/deploy", post(crate::deploy::deploy))
+        .route("/api/undeploy", post(crate::deploy::undeploy))
+        // History + Undo (REV-010 §11.5): the operator view of the
+        // revision store (who/what/when + one-click Undo). Reads viewer+,
+        // undo operator+, enforced in the handlers. Raw /api/tree/* stays
+        // for power use.
+        .route("/api/history", get(crate::history::list))
+        .route("/api/history/{id}", get(crate::history::detail))
+        .route("/api/history/{id}/undo", post(crate::history::undo))
         // Device fleet reads (Track D): list, detail (render
         // provenance), journal page; viewer+, enforced in the handlers.
+        // Device management writes (REV-010 §11.3): PATCH (operator+,
+        // re-renders on assignment change) and decommission (operator+).
         .route("/api/devices", get(crate::devices::list))
-        .route("/api/devices/{device_id}", get(crate::devices::detail))
+        .route(
+            "/api/devices/{device_id}",
+            get(crate::devices::detail).patch(crate::devices::patch),
+        )
+        .route(
+            "/api/devices/{device_id}/decommission",
+            post(crate::devices::decommission),
+        )
         .route(
             "/api/devices/{device_id}/journal",
             get(crate::devices::journal),
@@ -104,6 +125,12 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/api/rollouts/{rollout_id}/abort",
             post(crate::ext::rollouts::abort_route),
+        )
+        // Rollback (REV-010 §11.5): start a NEW rollout returning the
+        // cohort to its pre-rollout config (never "select revision N").
+        .route(
+            "/api/rollouts/{rollout_id}/rollback",
+            post(crate::ext::rollouts::rollback_route),
         );
     // Federation operator surface (C10, spec/reeve/06-federation.md
     // §8.7): tier-token create (admin) / list (viewer+) / revoke
@@ -287,16 +314,35 @@ pub struct HealthzResponse {
     pub status: String,
 }
 
+/// `GET /api/server` body: capability advertisement plus this
+/// instance's declared topology tier (spec/reeve/11-fleet-model.md
+/// §11.6) for the UI.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfo {
+    /// Same fields as the device-auth'd
+    /// `/api/reeve/v1/capabilities` (server version + extensions).
+    #[serde(flatten)]
+    pub capabilities: reeve_types::reeve::capabilities::ServerCapabilities,
+    /// `root` (the cloud/hub) or `site` (an on-prem gateway), §11.6.
+    pub tier: String,
+    /// The site label this instance serves; `null` on a root tier.
+    pub site: Option<String>,
+    /// Present iff this instance syncs from a parent tier
+    /// (`REEVE_UPSTREAM` set) — the operative federation signal (D9).
+    pub upstream: bool,
+}
+
 /// GET /api/server — server version + compiled-in extension
-/// advertisement for the ops UI. Human (session) leg of the
-/// device-auth'd /api/reeve/v1/capabilities; viewer+.
+/// advertisement + declared tier for the ops UI. Human (session) leg of
+/// the device-auth'd /api/reeve/v1/capabilities; viewer+.
 #[utoipa::path(
     get,
     path = "/api/server",
     operation_id = "server_info",
     tag = "ops",
     responses(
-        (status = 200, description = "Server version + advertised extensions", body = reeve_types::reeve::capabilities::ServerCapabilities),
+        (status = 200, description = "Server version, advertised extensions, and declared tier", body = ServerInfo),
         (status = 401, description = "Unauthenticated"),
         (status = 403, description = "Below viewer role"),
     ),
@@ -306,12 +352,24 @@ pub(crate) async fn server_info(
     identity: device_api::Identity,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
+    use crate::config::ServerTier;
     if let Err(status) =
         crate::join_tokens::require_at_least(&state, &identity, device_api::Role::Viewer)
     {
         return status.into_response();
     }
-    Json(delivery::server_capabilities()).into_response()
+    let tier = match state.cfg.tier {
+        ServerTier::Root => "root",
+        ServerTier::Site => "site",
+    };
+    let site = state.cfg.federation.as_ref().map(|f| f.site.clone());
+    let info = ServerInfo {
+        capabilities: delivery::server_capabilities(),
+        tier: tier.to_string(),
+        site,
+        upstream: state.cfg.federation.is_some(),
+    };
+    Json(info).into_response()
 }
 
 /// One failed device in a [`RenderKickResponse`].

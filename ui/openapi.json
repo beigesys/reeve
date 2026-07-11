@@ -125,6 +125,60 @@
         }
       }
     },
+    "/api/deploy": {
+      "post": {
+        "tags": [
+          "deploy"
+        ],
+        "summary": "POST /api/deploy (operator+) — deploy a stack to a scope (§11.4).\nAuthors `app.yaml` (package ref + `enabled:true` + profile) into the\nscope's layer(s) via the tree authoring path; re-renders affected\ndevices.",
+        "operationId": "deploy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deployed (or unchanged — D14 idempotence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role, or scope owned by another tier (federation §8.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid stack, scope, or unknown device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/devices": {
       "get": {
         "tags": [
@@ -189,6 +243,103 @@
           },
           "403": {
             "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "PATCH /api/devices/{device_id} (operator+) — partial device update\n(spec/reeve/11-fleet-model.md §11.3). Re-renders on any\nfleet/site/type change; tag/displayName/pin changes do not re-render.",
+        "operationId": "patch",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchDeviceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated device detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/devices/{device_id}/decommission": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "POST /api/devices/{device_id}/decommission (operator+) — revoke the\ndevice credential(s) and tombstone the device so its desired state\nstops being served (spec/reeve/11-fleet-model.md §11.3). Idempotent.",
+        "operationId": "decommission",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Decommissioned (idempotent)"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
           },
           "404": {
             "description": "Unknown device",
@@ -321,6 +472,156 @@
           },
           "403": {
             "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/history": {
+      "get": {
+        "tags": [
+          "history"
+        ],
+        "summary": "GET /api/history[?limit=N] (viewer+) — the change log, newest first,\neach with a human summary (§11.5).",
+        "operationId": "history_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max entries; default 100, cap 1000",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Change history, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HistoryEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/history/{id}": {
+      "get": {
+        "tags": [
+          "history"
+        ],
+        "summary": "GET /api/history/{id} (viewer+) — the plain diff: changed apps +\nscopes, never raw layer paths (§11.5).",
+        "operationId": "history_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Change id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Change detail: summary + changed apps/scopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/history/{id}/undo": {
+      "post": {
+        "tags": [
+          "history"
+        ],
+        "summary": "POST /api/history/{id}/undo (operator+) — author a NEW revision that\nrestores the whole tree to its content as of BEFORE change `{id}`\n(§11.5 Undo). manifestVersion still only ever climbs (content may\nrevert; the version counter never does — §11.5 note). Only local\nchanges are undoable; upstream (synced) changes are refused.",
+        "operationId": "undo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Change id to undo",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Undone — a new change restored prior content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not an undoable (local) change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -860,8 +1161,8 @@
         "tags": [
           "rollouts"
         ],
-        "summary": "POST /api/rollouts (operator+) — create and immediately start.",
-        "description": "DECISION (baseline): un-advanced cohort devices are held at\n`baselineRevision` (default: the target revision's parent). The\nauthoring commit has usually already rendered every device at head\nby the time the rollout is created (tree.rs render hook), so\ncreation re-pins cohort devices to the baseline render; devices\nthat polled in the gap converge back to it. manifestVersion stays\nstrictly monotonic throughout (§11.5 note — content may revert,\nversions never do). Create the rollout promptly after the commit\nand no device ever sees the staged content early.",
+        "summary": "POST /api/rollouts (operator+) — roll out the CURRENT desired config\nto a scope in waves (REV-010 §11.5). The operator names a scope\n(§11.4) + optional tag cohort; the server resolves the device set,\npins the current local head, and stages it.",
+        "description": "DECISION (baseline): un-advanced cohort devices are held at the head\nrevision's PARENT (the config just before this one). The authoring/\ndeploy commit has usually already rendered every device at head, so\ncreation re-pins cohort devices to that baseline; devices that polled\nin the gap converge back to it. manifestVersion stays strictly\nmonotonic throughout (§11.5 — content may revert, versions never do).",
         "operationId": "create_route",
         "requestBody": {
           "content": {
@@ -901,7 +1202,7 @@
             }
           },
           "422": {
-            "description": "Invalid revision, cohort, waves, or gate",
+            "description": "No config to roll out, empty scope, or invalid waves/gate",
             "content": {
               "application/json": {
                 "schema": {
@@ -1135,6 +1436,74 @@
         }
       }
     },
+    "/api/rollouts/{rollout_id}/rollback": {
+      "post": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "POST /api/rollouts/{id}/rollback (operator+) — start a NEW rollout\nreturning the cohort to its pre-rollout config (REV-010 §11.5:\nrollback is a new rollout of the previous config, NEVER \"select\nrevision N\"). The original rollout is aborted first (if still\nactive/paused) so its holds survive to be taken over; the rollback\nadvances the same cohort to the config the original held them at\nbefore it ran. manifestVersion still only ever climbs (§11.5).",
+        "operationId": "rollback_route",
+        "parameters": [
+          {
+            "name": "rollout_id",
+            "in": "path",
+            "description": "Rollout id to roll back",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Rollback rollout created and started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRolloutResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cohort already targeted by another active rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Nothing to roll back to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/secrets": {
       "get": {
         "tags": [
@@ -1262,15 +1631,15 @@
         "tags": [
           "ops"
         ],
-        "summary": "GET /api/server — server version + compiled-in extension\nadvertisement for the ops UI. Human (session) leg of the\ndevice-auth'd /api/reeve/v1/capabilities; viewer+.",
+        "summary": "GET /api/server — server version + compiled-in extension\nadvertisement + declared tier for the ops UI. Human (session) leg of\nthe device-auth'd /api/reeve/v1/capabilities; viewer+.",
         "operationId": "server_info",
         "responses": {
           "200": {
-            "description": "Server version + advertised extensions",
+            "description": "Server version, advertised extensions, and declared tier",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ServerCapabilities"
+                  "$ref": "#/components/schemas/ServerInfo"
                 }
               }
             }
@@ -1800,6 +2169,60 @@
         }
       }
     },
+    "/api/undeploy": {
+      "post": {
+        "tags": [
+          "deploy"
+        ],
+        "summary": "POST /api/undeploy (operator+) — remove a stack from a scope (§11.4:\n\"the same call removing the app from the scope\"). Removes the app dir\nfrom the scope's layer(s); re-renders affected devices.",
+        "operationId": "undeploy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Undeployed (or unchanged — the app was not in the scope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role, or scope owned by another tier (federation §8.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid stack or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{client_id}/deployments/{deployment_id}/status": {
       "post": {
         "tags": [
@@ -1978,36 +2401,6 @@
           }
         }
       },
-      "CohortSpec": {
-        "type": "object",
-        "description": "Cohort selector (§11 terms): explicit device list, tree selections\n(layer subtrees), and/or label matches (D12: labels select COHORTS\nand filter UIs only — they never select or inject configuration).\nSelectors union; the resolved cohort is recorded at creation.",
-        "properties": {
-          "devices": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "labels": {
-            "type": "object",
-            "description": "All pairs must match the device's free-form labels.",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "layers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Layer dir names per D11 grammar (`00-fleet`, `05-class.<n>`,\n`10-region.<n>`, `20-site.<n>`, `30-device.<id>`); the numeric\nprefix is optional here (`site.plant-a` works)."
-          }
-        },
-        "additionalProperties": false
-      },
       "CommitResponse": {
         "type": "object",
         "description": "Commit outcome of both PUT endpoints (`changed: false` = identical\ncontent, no new revision — D14 idempotence). Package PUTs also\ncarry validation `warnings`.",
@@ -2075,6 +2468,13 @@
             ],
             "description": "Existing device to bind a re-enroll token to (D4)."
           },
+          "fleet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional enrollment pre-assignment (§11.3): the group the\nenrolling device lands in and the tags it carries at first\ncontact."
+          },
           "max_uses": {
             "type": [
               "integer",
@@ -2083,6 +2483,24 @@
             "format": "int64",
             "description": "Default 1 (D4)."
           },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "ttl_secs": {
             "type": [
               "integer",
@@ -2090,28 +2508,22 @@
             ],
             "format": "int64",
             "description": "Seconds until expiry; default 86400 (24h, D4)."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "CreateRequest": {
         "type": "object",
-        "description": "POST /api/rollouts body. Waves: exactly one of `waves` (explicit\npartition), `strategy` (e.g. `[\"1\", \"10%\", \"rest\"]`), `waveCount`,\nor none (single wave = whole cohort).",
+        "description": "POST /api/rollouts body (REV-010 §11.5): a rollout targets a SCOPE\n(§11.4) narrowed by an optional tag cohort, resolved to a device set\nat creation — NOT a revision id chosen by the operator. The current\ndesired config (the local head) is pinned server-side and rolled out\nin waves. Waves: exactly one of `waves` (explicit partition),\n`strategy` (e.g. `[\"1\", \"10%\", \"rest\"]`), `waveCount`, or none\n(single wave = whole cohort).",
         "required": [
-          "revision",
-          "cohort"
+          "scope"
         ],
         "properties": {
-          "baselineRevision": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Hold revision for not-yet-advanced devices; default: the target\nrevision's parent (see module docs — DECISION below)."
-          },
-          "cohort": {
-            "$ref": "#/components/schemas/CohortSpec"
-          },
           "failureThreshold": {
             "type": [
               "integer",
@@ -2122,10 +2534,9 @@
           "gate": {
             "$ref": "#/components/schemas/GateSpec"
           },
-          "revision": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The source tree revision (§11.1) — an existing local revision."
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "The deploy scope (§11.4) this rollout targets."
           },
           "strategy": {
             "type": [
@@ -2133,6 +2544,19 @@
               "null"
             ],
             "items": {
+              "type": "string"
+            }
+          },
+          "tagCohort": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Optional tag cohort narrowing the scope (D12: tags select\ncohorts, never configuration). All pairs must match a device's\ntags for it to be included.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
               "type": "string"
             }
           },
@@ -2167,7 +2591,8 @@
           "revision",
           "state",
           "cohort",
-          "waves"
+          "waves",
+          "scopeDescription"
         ],
         "properties": {
           "cohort": {
@@ -2181,8 +2606,19 @@
             "type": "integer",
             "format": "int64"
           },
+          "rollbackOf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present when this rollout is a rollback of another (§11.5)."
+          },
           "rolloutId": {
             "type": "string"
+          },
+          "scopeDescription": {
+            "type": "string",
+            "description": "Human scope phrasing (§11.5: describe scope in words)."
           },
           "state": {
             "type": "string",
@@ -2294,6 +2730,50 @@
           "token": {
             "type": "string",
             "description": "The raw tier token — only the hash is stored."
+          }
+        }
+      },
+      "DeployRequest": {
+        "type": "object",
+        "description": "`POST /api/deploy` / `POST /api/undeploy` body (§11.4).",
+        "required": [
+          "stack",
+          "scope"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "stack": {
+            "$ref": "#/components/schemas/StackRef"
+          }
+        }
+      },
+      "DeployResponse": {
+        "type": "object",
+        "description": "Response of both deploy and undeploy: the authoring outcome plus the\nhuman framing (§11.5 — never a raw layer path).",
+        "required": [
+          "revision",
+          "changed",
+          "app",
+          "scope"
+        ],
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "The deployed/undeployed app id."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "`false` => identical content, no new revision (D14 idempotence)."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Human scope phrasing, e.g. `Site plant-a` (§11.5)."
           }
         }
       },
@@ -2542,6 +3022,8 @@
           "agentVersion",
           "enrolledAt",
           "labels",
+          "tags",
+          "pinned",
           "stale",
           "presence",
           "deployments"
@@ -2558,7 +3040,7 @@
               "string",
               "null"
             ],
-            "description": "Layer-chain membership (D11: fleet -> class? -> region -> site\n-> device), each nullable."
+            "description": "Retained V2 columns, dormant after the REV-010 taxonomy remap\n(kept for compatibility; no longer feed the config chain)."
           },
           "deployments": {
             "type": "array",
@@ -2570,17 +3052,31 @@
           "deviceId": {
             "type": "string"
           },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human rename, distinct from `device_id` (§11.3); `null` => fall\nback to hostname."
+          },
           "enrolledAt": {
             "type": "integer",
             "format": "int64",
             "description": "Unix seconds."
+          },
+          "fleet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hierarchy-tier assignment (spec/reeve/11-fleet-model.md §11.1:\nall -> fleet? -> site? -> type? -> device), each nullable."
           },
           "hostname": {
             "type": "string"
           },
           "labels": {
             "type": "object",
-            "description": "Free-form labels (docs/decisions/tree-render.md D12: labels\ngroup and filter, never configure).",
+            "description": "Free-form labels (docs/decisions/tree-render.md D12: labels\ngroup and filter, never configure). Alias: `tags` (§11.2 — the\noperator-facing name for the same column).",
             "additionalProperties": {
               "type": "string"
             },
@@ -2595,6 +3091,10 @@
             ],
             "format": "int64",
             "description": "Unix seconds of last contact; `null` = never seen."
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Pin hold (§11.3): the device keeps its current desired config and\nis excluded from new deploys/rollouts until unpinned."
           },
           "presence": {
             "$ref": "#/components/schemas/PresenceInfo"
@@ -2615,12 +3115,28 @@
             "type": "boolean",
             "description": "Identity superseded by a newer enrollment from the same\nhostname (docs/decisions/agent.md D4 wiped-box case)."
           },
+          "tags": {
+            "type": "object",
+            "description": "Free-form key/value tags (spec/reeve/11-fleet-model.md §11.2) —\nthe same data as `labels`, under the fleet-model name the UI\nuses. Ad-hoc grouping/filtering/rollout cohorts only; never\nselects config (that is the layer chain's job).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "tierOrigin": {
             "type": [
               "string",
               "null"
             ],
             "description": "Child tier this device reached us through (federation §8.3);\n`null` = enrolled here."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3185,6 +3701,102 @@
           }
         }
       },
+      "HistoryChange": {
+        "type": "object",
+        "description": "One changed app+scope in a [`HistoryDetail`] (never a raw path).",
+        "required": [
+          "change",
+          "app",
+          "scope",
+          "scopeLabel"
+        ],
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "The app id."
+          },
+          "change": {
+            "type": "string",
+            "description": "`deployed` | `undeployed` | `changed`."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "The scope the change touched."
+          },
+          "scopeLabel": {
+            "type": "string",
+            "description": "Human scope phrasing (`Site plant-a`)."
+          }
+        }
+      },
+      "HistoryDetail": {
+        "type": "object",
+        "description": "`GET /api/history/{id}` body: the plain, path-free diff (§11.5).",
+        "required": [
+          "id",
+          "when",
+          "who",
+          "summary",
+          "changes",
+          "otherChanges"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryChange"
+            },
+            "description": "Changed apps + scopes. Empty when the change touched only\nnon-app content (a vendored package) — see `otherChanges`."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "otherChanges": {
+            "type": "integer",
+            "description": "Count of changed tree paths outside any `apps/<app>/` (package\nvendoring, etc.) — surfaced as a number, never as paths.",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "who": {
+            "type": "string"
+          }
+        }
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One `GET /api/history` entry (§11.5: who/what/when, no plumbing).",
+        "required": [
+          "id",
+          "when",
+          "who",
+          "summary"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Opaque change id (the revision id under the hood, but the UI\ntreats it as a change handle — §11.5)."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Human one-liner, e.g. `deployed nginx to Site plant-a`, else\n`config change`."
+          },
+          "when": {
+            "type": "string",
+            "description": "RFC 3339 timestamp."
+          },
+          "who": {
+            "type": "string",
+            "description": "The author of the change."
+          }
+        }
+      },
       "JoinTokenInfo": {
         "type": "object",
         "description": "One join token row, as listed to operators (never the raw token).",
@@ -3215,6 +3827,13 @@
             "type": "integer",
             "format": "int64"
           },
+          "fleet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Enrollment pre-assignment applied to the device that enrolls with\nthis token (spec/reeve/11-fleet-model.md §11.3): hierarchy tiers\nand free-form tags."
+          },
           "max_uses": {
             "type": "integer",
             "format": "int64"
@@ -3226,8 +3845,32 @@
             ],
             "format": "int64"
           },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "token_hash": {
             "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "uses": {
             "type": "integer",
@@ -3396,6 +4039,58 @@
           }
         },
         "additionalProperties": {}
+      },
+      "PatchDeviceRequest": {
+        "type": "object",
+        "description": "`PATCH /api/devices/{device_id}` body: a partial device update\n(spec/reeve/11-fleet-model.md §11.3). Every field is optional;\n`null` clears an assignment/rename, an absent field is unchanged.",
+        "properties": {
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human rename; `null` clears it (falls back to hostname)."
+          },
+          "fleet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hierarchy assignment; `null` unassigns (removes the layer from\nthe chain). A change re-renders the device."
+          },
+          "pinned": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Pin hold (§11.3). Needs no re-render (the device holds where it\nis; unpinning is picked up on the next poll)."
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Replace the free-form tag set (§11.2). `null` clears all tags.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "PresenceInfo": {
         "type": "object",
@@ -3730,6 +4425,7 @@
           "state",
           "currentWave",
           "cohort",
+          "scopeDescription",
           "gate",
           "failureThreshold",
           "createdBy",
@@ -3742,7 +4438,7 @@
         "properties": {
           "cohort": {
             "type": "object",
-            "description": "The cohort spec as recorded at creation."
+            "description": "The cohort spec as recorded at creation (`{scope, tagCohort,\ndescription}`)."
           },
           "createdAt": {
             "type": "integer",
@@ -3779,6 +4475,10 @@
           },
           "rolloutId": {
             "type": "string"
+          },
+          "scopeDescription": {
+            "type": "string",
+            "description": "Human scope phrasing (§11.5), e.g. `Site plant-a`."
           },
           "state": {
             "type": "string"
@@ -3847,6 +4547,7 @@
           "revision",
           "state",
           "currentWave",
+          "scopeDescription",
           "createdBy",
           "createdAt",
           "updatedAt",
@@ -3882,6 +4583,10 @@
           "rolloutId": {
             "type": "string"
           },
+          "scopeDescription": {
+            "type": "string",
+            "description": "Human scope phrasing (§11.5), e.g. `Site plant-a tagged env=prod`."
+          },
           "state": {
             "type": "string",
             "description": "`active` | `paused` | `aborted` | `completed`."
@@ -3912,6 +4617,105 @@
             "type": "string"
           }
         }
+      },
+      "Scope": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The base layer — every device (`layers/00-all`).",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "all"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A logical fleet group (`layers/10-fleet.<name>`).",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fleet"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A physical site (`layers/20-site.<name>`).",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "site"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A device-type/hardware class (`layers/30-type.<name>`).",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "type"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Explicit device list (`layers/40-device.<id>` each).",
+            "required": [
+              "ids",
+              "kind"
+            ],
+            "properties": {
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "devices"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A deploy/rollout target (§11.4). `kind` is the JSON discriminator:\n`{\"kind\":\"all\"}`, `{\"kind\":\"fleet\",\"name\":\"north\"}`, …,\n`{\"kind\":\"devices\",\"ids\":[\"dev-1\",\"dev-2\"]}`."
       },
       "SecretDeleted": {
         "type": "object",
@@ -4089,6 +4893,39 @@
           }
         }
       },
+      "ServerInfo": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ServerCapabilities",
+            "description": "Same fields as the device-auth'd\n`/api/reeve/v1/capabilities` (server version + extensions)."
+          },
+          {
+            "type": "object",
+            "required": [
+              "tier",
+              "upstream"
+            ],
+            "properties": {
+              "site": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The site label this instance serves; `null` on a root tier."
+              },
+              "tier": {
+                "type": "string",
+                "description": "`root` (the cloud/hub) or `site` (an on-prem gateway), §11.6."
+              },
+              "upstream": {
+                "type": "boolean",
+                "description": "Present iff this instance syncs from a parent tier\n(`REEVE_UPSTREAM` set) — the operative federation signal (D9)."
+              }
+            }
+          }
+        ],
+        "description": "`GET /api/server` body: capability advertisement plus this\ninstance's declared topology tier (spec/reeve/11-fleet-model.md\n§11.6) for the UI."
+      },
       "SessionInfo": {
         "type": "object",
         "required": [
@@ -4120,6 +4957,38 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "StackRef": {
+        "type": "object",
+        "description": "The stack to deploy: a vendored package (`packages/<package>/\n<version>/`, D11) and an optional deployment profile. `name` is the\napp's dir under the scope layer (`apps/<name>/`) — defaults to the\npackage name, so `{package, version}` is the minimal stack.",
+        "required": [
+          "package",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "App id in the layer (`apps/<name>/`). Absent => the package name."
+          },
+          "package": {
+            "type": "string",
+            "description": "Vendored package name (`packages/<package>/`)."
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Deployment profile id (Margo `deploymentProfiles[].id`); absent =>\nthe package's sole/only-compose profile is selected at render."
+          },
+          "version": {
+            "type": "string",
+            "description": "Vendored package version."
           }
         }
       },
@@ -4319,6 +5188,33 @@
           "ts": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "UndoResponse": {
+        "type": "object",
+        "description": "`POST /api/history/{id}/undo` body.",
+        "required": [
+          "revision",
+          "changed"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean",
+            "description": "`false` => nothing to undo (content already matched)."
+          },
+          "restoredTo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The change id the content was restored to (before the undone\nchange); `null` when the undone change was the first."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The new change id that restored prior content."
           }
         }
       },
@@ -4542,6 +5438,14 @@
     {
       "name": "tree",
       "description": "Layered deployment tree: authoring, history, diff, blame, render"
+    },
+    {
+      "name": "deploy",
+      "description": "Deploy/undeploy a stack to a scope (spec/reeve/11-fleet-model.md §11.4)"
+    },
+    {
+      "name": "history",
+      "description": "Change history and Undo (spec/reeve/11-fleet-model.md §11.5)"
     },
     {
       "name": "devices",

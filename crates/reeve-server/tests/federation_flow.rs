@@ -45,6 +45,7 @@ fn root_config(data_dir: &FsPath) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None, // anonymous acts as admin (D1)
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,
@@ -193,7 +194,7 @@ async fn author_web_app(root: &Router) {
     let (status, body) = send_json(
         root,
         put_files(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         ),
     )
@@ -280,7 +281,7 @@ async fn author_at_root_sync_renders_on_child() {
     let (status, _) = send_json(
         &root_router,
         put_files(
-            "/api/tree/layers/10-region.emea",
+            "/api/tree/layers/10-fleet.emea",
             &[("params.yaml", "params:\n  greeting: hej\n")],
         ),
     )
@@ -305,7 +306,7 @@ async fn ownership_is_enforced_in_both_directions() {
     // Child: fleet layer is hub-owned — 403 (§8.4).
     let (status, body) = send_json(
         &child_router,
-        put_files("/api/tree/layers/00-fleet", &[("x.yaml", "a: 1\n")]),
+        put_files("/api/tree/layers/00-all", &[("x.yaml", "a: 1\n")]),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -317,7 +318,7 @@ async fn ownership_is_enforced_in_both_directions() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Child: its OWN site + device layers are writable.
-    for layer in [format!("20-site.{SITE}"), "30-device.dev-9".to_string()] {
+    for layer in [format!("20-site.{SITE}"), "40-device.dev-9".to_string()] {
         let (status, body) = send_json(
             &child_router,
             put_files(&format!("/api/tree/layers/{layer}"), &[("params.yaml", "params: {}\n")]),
@@ -347,7 +348,7 @@ async fn ownership_is_enforced_in_both_directions() {
     // …and hub layers remain the root's to author.
     let (status, _) = send_json(
         &root_router,
-        put_files("/api/tree/layers/00-fleet", &[("x.yaml", "a: 1\n")]),
+        put_files("/api/tree/layers/00-all", &[("x.yaml", "a: 1\n")]),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -47,11 +47,28 @@ pub struct JoinTokenInfo {
     /// Set => re-enroll token bound to this existing device (D4).
     pub device_id: Option<String>,
     pub revoked_at: Option<i64>,
+    /// Enrollment pre-assignment applied to the device that enrolls with
+    /// this token (spec/reeve/11-fleet-model.md §11.3): hierarchy tiers
+    /// and free-form tags.
+    pub fleet: Option<String>,
+    pub site: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    pub tags: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// Issue a join token: returns the raw token — the ONLY time it exists
-/// server-side (only the hash is stored). `device_id` binds a re-enroll
-/// token to an existing device (D4).
+/// Optional enrollment pre-assignment carried by a join token
+/// (spec/reeve/11-fleet-model.md §11.3): the group a box lands in and
+/// the tags it carries at first contact. All fields optional.
+#[derive(Debug, Default, Clone)]
+pub struct PreAssign {
+    pub fleet: Option<String>,
+    pub site: Option<String>,
+    pub r#type: Option<String>,
+    pub tags: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Issue a join token with no pre-assignment (the D4 base case).
 pub fn issue(
     conn: &Connection,
     created_by: &str,
@@ -59,19 +76,43 @@ pub fn issue(
     max_uses: i64,
     device_id: Option<&str>,
 ) -> rusqlite::Result<String> {
+    issue_with(conn, created_by, ttl_secs, max_uses, device_id, &PreAssign::default())
+}
+
+/// Issue a join token: returns the raw token — the ONLY time it exists
+/// server-side (only the hash is stored). `device_id` binds a re-enroll
+/// token to an existing device (D4); `assign` pre-assigns the enrolling
+/// device's group/tags (§11.3).
+pub fn issue_with(
+    conn: &Connection,
+    created_by: &str,
+    ttl_secs: i64,
+    max_uses: i64,
+    device_id: Option<&str>,
+    assign: &PreAssign,
+) -> rusqlite::Result<String> {
     let token = generate_join_token();
     let now = now_secs();
+    let tags_json = assign
+        .tags
+        .as_ref()
+        .map(|t| serde_json::to_string(t).expect("tags map serializes"));
     conn.execute(
         "INSERT INTO join_tokens
-             (token_hash, created_by, created_at, expires_at, max_uses, device_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (token_hash, created_by, created_at, expires_at, max_uses, device_id,
+              fleet, site, \"type\", tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             token_hash(&token),
             created_by,
             now,
             now + ttl_secs,
             max_uses,
-            device_id
+            device_id,
+            assign.fleet,
+            assign.site,
+            assign.r#type,
+            tags_json,
         ],
     )?;
     Ok(token)
@@ -81,10 +122,11 @@ pub fn issue(
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<JoinTokenInfo>> {
     let mut stmt = conn.prepare(
         "SELECT token_hash, created_by, created_at, expires_at, max_uses, uses,
-                device_id, revoked_at
+                device_id, revoked_at, fleet, site, \"type\", tags
          FROM join_tokens ORDER BY created_at DESC, token_hash",
     )?;
     let rows = stmt.query_map([], |row| {
+        let tags_json: Option<String> = row.get(11)?;
         Ok(JoinTokenInfo {
             token_hash: row.get(0)?,
             created_by: row.get(1)?,
@@ -94,6 +136,10 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<JoinTokenInfo>> {
             uses: row.get(5)?,
             device_id: row.get(6)?,
             revoked_at: row.get(7)?,
+            fleet: row.get(8)?,
+            site: row.get(9)?,
+            r#type: row.get(10)?,
+            tags: tags_json.and_then(|t| serde_json::from_str(&t).ok()),
         })
     })?;
     rows.collect()
@@ -136,6 +182,14 @@ pub struct CreateJoinTokenRequest {
     pub max_uses: Option<i64>,
     /// Existing device to bind a re-enroll token to (D4).
     pub device_id: Option<String>,
+    /// Optional enrollment pre-assignment (§11.3): the group the
+    /// enrolling device lands in and the tags it carries at first
+    /// contact.
+    pub fleet: Option<String>,
+    pub site: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    pub tags: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// `POST /api/join-tokens` body: the raw token, shown exactly once.
@@ -209,12 +263,19 @@ pub async fn create(
                 .into_response();
         }
     }
-    match issue(
+    let assign = PreAssign {
+        fleet: body.fleet.clone(),
+        site: body.site.clone(),
+        r#type: body.r#type.clone(),
+        tags: body.tags.clone(),
+    };
+    match issue_with(
         &conn,
         &created_by,
         ttl_secs,
         max_uses,
         body.device_id.as_deref(),
+        &assign,
     ) {
         Ok(raw) => (
             StatusCode::CREATED,

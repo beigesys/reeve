@@ -72,6 +72,7 @@ function EnrollmentPage() {
               <TableHead>Expires</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Binding</TableHead>
+              <TableHead>Pre-assign</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -79,7 +80,7 @@ function EnrollmentPage() {
             {rows.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={7}
+                  colSpan={8}
                   className="h-16 text-center text-muted-foreground"
                 >
                   {tokens.isLoading ? 'Loading…' : 'No join tokens.'}
@@ -119,6 +120,33 @@ function EnrollmentPage() {
                       ) : (
                         <span className="text-sm text-muted-foreground">new device</span>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const parts = [
+                          t.fleet && `Fleet ${t.fleet}`,
+                          t.site && `Site ${t.site}`,
+                          t.type && `Type ${t.type}`,
+                          ...Object.entries(t.tags ?? {}).map(
+                            ([k, v]) => `${k}${v ? `=${v}` : ''}`,
+                          ),
+                        ].filter(Boolean)
+                        return parts.length === 0 ? (
+                          <span className="text-sm text-muted-foreground">—</span>
+                        ) : (
+                          <span className="flex max-w-56 flex-wrap gap-1">
+                            {parts.map((p) => (
+                              <Badge
+                                key={p as string}
+                                variant="secondary"
+                                className="font-normal"
+                              >
+                                {p}
+                              </Badge>
+                            ))}
+                          </span>
+                        )
+                      })()}
                     </TableCell>
                     <TableCell className="text-right">
                       {state.label === 'active' && (

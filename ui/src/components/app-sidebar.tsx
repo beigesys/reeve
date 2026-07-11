@@ -1,12 +1,14 @@
 import { Link, useMatchRoute } from '@tanstack/react-router'
 import {
   Activity,
-  GitBranch,
+  History,
   KeyRound,
   MonitorSmartphone,
+  Network,
   Package,
   Rocket,
   Ticket,
+  Upload,
 } from 'lucide-react'
 import {
   Sidebar,
@@ -20,10 +22,12 @@ import {
 } from '@/components/ui/sidebar'
 
 const NAV = [
+  { to: '/fleet', label: 'Fleet', icon: Network },
   { to: '/devices', label: 'Devices', icon: MonitorSmartphone },
-  { to: '/tree', label: 'Tree', icon: GitBranch },
+  { to: '/deploy', label: 'Deploy', icon: Upload },
   { to: '/packages', label: 'Packages', icon: Package },
   { to: '/rollouts', label: 'Rollouts', icon: Rocket },
+  { to: '/history', label: 'History', icon: History },
   { to: '/secrets', label: 'Secrets', icon: KeyRound },
   { to: '/enrollment', label: 'Enrollment', icon: Ticket },
   { to: '/ops', label: 'Ops', icon: Activity },
@@ -36,7 +40,7 @@ export function AppSidebar() {
       <SidebarHeader>
         <div className="flex h-8 items-center px-2">
           <Link
-            to="/devices"
+            to="/fleet"
             className="text-lg font-semibold tracking-tight group-data-[collapsible=icon]:hidden"
           >
             reeve

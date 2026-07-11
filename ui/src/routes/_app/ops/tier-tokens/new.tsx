@@ -173,7 +173,7 @@ function TierTokenCreatePage() {
                   id="prefix-input"
                   value={prefixInput}
                   onChange={(e) => setPrefixInput(e.target.value)}
-                  placeholder="layers/00-fleet"
+                  placeholder="packages/"
                   className="max-w-72 font-mono"
                 />
                 <Button

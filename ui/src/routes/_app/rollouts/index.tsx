@@ -42,7 +42,7 @@ function RolloutsPage() {
             <TableRow>
               <TableHead>Rollout</TableHead>
               <TableHead>State</TableHead>
-              <TableHead>Revision</TableHead>
+              <TableHead>Scope</TableHead>
               <TableHead>Wave</TableHead>
               <TableHead>Devices</TableHead>
               <TableHead>Created</TableHead>
@@ -83,7 +83,9 @@ function RolloutsPage() {
                   <TableCell>
                     <RolloutStateBadge state={r.state} />
                   </TableCell>
-                  <TableCell className="font-mono text-sm">r{r.revision}</TableCell>
+                  <TableCell className="max-w-72 truncate text-sm">
+                    {r.scopeDescription}
+                  </TableCell>
                   <TableCell className="text-sm">
                     {r.currentWave + 1} / {r.waveCount}
                   </TableCell>

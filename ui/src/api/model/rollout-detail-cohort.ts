@@ -7,6 +7,7 @@
  */
 
 /**
- * The cohort spec as recorded at creation.
+ * The cohort spec as recorded at creation (`{scope, tagCohort,
+ * description}`).
  */
 export type RolloutDetailCohort = { [key: string]: unknown };

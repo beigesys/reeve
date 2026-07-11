@@ -98,6 +98,16 @@ const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "federation",
         sql: include_str!("migrations/V9__federation.sql"),
     },
+    // Operator fleet model (REV-010, spec/reeve/11-fleet-model.md): the
+    // hierarchy-tier assignment columns (fleet/type + display_name/
+    // pinned/decommissioned_at), and enrollment pre-assignment columns
+    // on join_tokens. Additive; class/region (V2) are retained but
+    // dormant after the taxonomy remap.
+    EmbeddedMigration {
+        version: 10,
+        name: "fleet_model",
+        sql: include_str!("migrations/V10__fleet_model.sql"),
+    },
 ];
 
 /// Open the server DB with the D6 pragmas. Idempotent.

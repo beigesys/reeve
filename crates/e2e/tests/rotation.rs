@@ -76,7 +76,7 @@ async fn rotation_reups_only_the_consuming_app() {
     author.put_package("other", "1.0.0", &[("margo.yaml", OTHER_MANIFEST), ("compose.yml", COMPOSE)]).await;
     author
         .put_layer(
-            "00-fleet",
+            "00-all",
             &[
                 ("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n"),
                 ("apps/other/app.yaml", "package:\n  name: other\n  version: 1.0.0\n"),

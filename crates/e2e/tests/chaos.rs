@@ -148,7 +148,7 @@ async fn server_startup_reconciles_unrendered_commit_then_agent_pulls() {
             .map(|(p, d)| (p.clone(), rs.blob(d).unwrap().unwrap()))
             .collect();
         files.insert(
-            "layers/30-device.dev-1/apps/web/params.yaml".to_string(),
+            "layers/40-device.dev-1/apps/web/params.yaml".to_string(),
             b"greeting: healed-at-startup\n".to_vec(),
         );
         rs.commit(files, "test", "crash sim: committed, not rendered", Stream::Local)

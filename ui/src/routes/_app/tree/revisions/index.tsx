@@ -29,18 +29,18 @@ function RevisionsPage() {
         <Button variant="ghost" size="sm" asChild>
           <Link to="/tree">
             <ArrowLeft className="size-4" />
-            Tree
+            Advanced
           </Link>
         </Button>
-        <h1 className="text-xl font-semibold tracking-tight">Revisions</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Change log</h1>
       </div>
 
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Revision</TableHead>
-              <TableHead>Stream</TableHead>
+              <TableHead>Change</TableHead>
+              <TableHead>Source</TableHead>
               <TableHead>Message</TableHead>
               <TableHead>Author</TableHead>
               <TableHead>Created</TableHead>

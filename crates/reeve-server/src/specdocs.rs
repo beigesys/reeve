@@ -97,6 +97,7 @@ mod tests {
                 "08-packaging.md",
                 "09-rollouts.md",
                 "10-secrets.md",
+                "11-fleet-model.md",
             ]
         );
     }

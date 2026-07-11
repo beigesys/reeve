@@ -8,6 +8,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from '@tanstack/react-table'
+import { Pin } from 'lucide-react'
 import { useList } from '@/api/endpoints/devices/devices'
 import type { DeviceSummary } from '@/api/model'
 import { Badge } from '@/components/ui/badge'
@@ -22,7 +23,6 @@ import {
 } from '@/components/ui/table'
 import { DeploymentStateBadge } from '@/components/deployment-state-badge'
 import { PresenceBadge } from '@/components/presence-badge'
-import { fmtAgo } from '@/lib/format'
 import { usePollInterval } from '@/lib/sse'
 
 export const Route = createFileRoute('/_app/devices/')({
@@ -52,23 +52,36 @@ function DeploymentsRollup({ device }: { device: DeviceSummary }) {
 }
 
 const columns = [
-  columnHelper.accessor('hostname', {
+  columnHelper.accessor((d) => d.displayName ?? d.hostname, {
+    id: 'name',
     header: 'Device',
-    cell: (info) => (
-      <span className="flex flex-col">
-        <span className="font-medium">
-          {info.getValue()}
-          {info.row.original.stale && (
-            <Badge variant="outline" className="ml-2 font-normal text-muted-foreground">
-              stale
-            </Badge>
-          )}
+    cell: (info) => {
+      const d = info.row.original
+      return (
+        <span className="flex flex-col">
+          <span className="flex items-center gap-2 font-medium">
+            {d.displayName ?? d.hostname}
+            {d.pinned && (
+              <Badge variant="outline" className="gap-1 font-normal">
+                <Pin className="size-3" /> pinned
+              </Badge>
+            )}
+            {d.stale && (
+              <Badge
+                variant="outline"
+                className="font-normal text-muted-foreground"
+              >
+                stale
+              </Badge>
+            )}
+          </span>
+          <span className="font-mono text-xs text-muted-foreground">
+            {d.displayName ? `${d.hostname} · ` : ''}
+            {d.deviceId}
+          </span>
         </span>
-        <span className="font-mono text-xs text-muted-foreground">
-          {info.row.original.deviceId}
-        </span>
-      </span>
-    ),
+      )
+    },
   }),
   columnHelper.accessor((d) => d.presence.state, {
     id: 'presence',
@@ -76,16 +89,11 @@ const columns = [
     cell: (info) => <PresenceBadge presence={info.row.original.presence} />,
   }),
   columnHelper.display({
-    id: 'deployments',
-    header: 'Deployments',
-    cell: (info) => <DeploymentsRollup device={info.row.original} />,
-  }),
-  columnHelper.display({
     id: 'placement',
-    header: 'Class / Region / Site',
+    header: 'Fleet / Site / Type',
     cell: (info) => {
       const d = info.row.original
-      const parts = [d.class, d.region, d.site]
+      const parts = [d.fleet, d.site, d.type]
       return (
         <span className="text-sm">
           {parts.every((p) => !p)
@@ -96,29 +104,29 @@ const columns = [
     },
   }),
   columnHelper.display({
-    id: 'labels',
-    header: 'Labels',
+    id: 'deployments',
+    header: 'Deployments',
+    cell: (info) => <DeploymentsRollup device={info.row.original} />,
+  }),
+  columnHelper.display({
+    id: 'tags',
+    header: 'Tags',
     cell: (info) => {
-      const labels = Object.entries(info.row.original.labels)
-      if (labels.length === 0) return <span className="text-muted-foreground">—</span>
+      const tags = Object.entries(info.row.original.tags)
+      if (tags.length === 0)
+        return <span className="text-muted-foreground">—</span>
       return (
         <span className="flex max-w-64 flex-wrap gap-1">
-          {labels.map(([k, v]) => (
-            <Badge key={k} variant="secondary" className="font-mono text-xs font-normal">
-              {k}={String(v)}
+          {tags.map(([k, v]) => (
+            <Badge
+              key={k}
+              variant="secondary"
+              className="font-mono text-xs font-normal"
+            >
+              {k}
+              {v ? `=${v}` : ''}
             </Badge>
           ))}
-        </span>
-      )
-    },
-  }),
-  columnHelper.accessor('lastSeenAt', {
-    header: 'Last seen',
-    cell: (info) => {
-      const v = info.getValue()
-      return (
-        <span className="text-sm text-muted-foreground">
-          {v == null ? 'never' : `${fmtAgo(v)} ago`}
         </span>
       )
     },
@@ -141,18 +149,19 @@ function DevicesPage() {
     columns,
     state: { globalFilter: filter },
     onGlobalFilterChange: setFilter,
-    // Search across hostname, device id, placement and labels.
+    // Search across name, id, group assignment and tags.
     globalFilterFn: (row, _columnId, value: string) => {
       const d = row.original
       const needle = value.toLowerCase()
       const hay = [
+        d.displayName,
         d.hostname,
         d.deviceId,
-        d.class,
-        d.region,
+        d.fleet,
         d.site,
+        d.type,
         d.presence.state,
-        ...Object.entries(d.labels).map(([k, v]) => `${k}=${String(v)}`),
+        ...Object.entries(d.tags).map(([k, v]) => `${k}=${String(v)}`),
         ...d.deployments.map((dep) => dep.state),
       ]
         .filter(Boolean)
@@ -170,7 +179,7 @@ function DevicesPage() {
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
         <Input
-          placeholder="Filter by hostname, id, label, site…"
+          placeholder="Filter by name, id, fleet, site, tag…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="max-w-72"

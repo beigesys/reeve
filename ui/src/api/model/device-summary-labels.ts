@@ -8,6 +8,7 @@
 
 /**
  * Free-form labels (docs/decisions/tree-render.md D12: labels
- * group and filter, never configure).
+ * group and filter, never configure). Alias: `tags` (§11.2 — the
+ * operator-facing name for the same column).
  */
 export type DeviceSummaryLabels = {[key: string]: string};

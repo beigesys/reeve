@@ -18,6 +18,8 @@ export interface RolloutSummary {
   pauseReason?: string | null;
   revision: number;
   rolloutId: string;
+  /** Human scope phrasing (§11.5), e.g. `Site plant-a tagged env=prod`. */
+  scopeDescription: string;
   /** `active` | `paused` | `aborted` | `completed`. */
   state: string;
   updatedAt: number;

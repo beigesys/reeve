@@ -16,7 +16,7 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use http_body_util::BodyExt as _;
-use rusqlite::params;
+use rusqlite::{OptionalExtension as _, params};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -33,6 +33,7 @@ fn config(data_dir: &FsPath) -> Config {
         data_dir: data_dir.to_path_buf(),
         auth: AuthMode::None, // anonymous acts as admin (D1)
         session_ttl_secs: 3600,
+        tier: reeve_server::config::ServerTier::Root,
         registry_endpoint: "registry.example:5000".to_string(),
         durability: reeve_server::config::DurabilityConfig::disabled(),
         zot: None,
@@ -145,7 +146,7 @@ async fn author_web_app(app: &Router) {
     let (status, _) = send_json(
         app,
         put_files(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         ),
     )
@@ -379,7 +380,7 @@ async fn no_change_rerender_does_not_bump() {
     let (status, res) = send_json(
         &app,
         put_files(
-            "/api/tree/layers/00-fleet",
+            "/api/tree/layers/00-all",
             &[("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n")],
         ),
     )
@@ -392,7 +393,7 @@ async fn no_change_rerender_does_not_bump() {
     let (status, res) = send_json(
         &app,
         put_files(
-            "/api/tree/layers/30-device.dev-other",
+            "/api/tree/layers/40-device.dev-other",
             &[("apps/web/params.yaml", "greeting: someone-else\n")],
         ),
     )
@@ -409,7 +410,7 @@ async fn no_change_rerender_does_not_bump() {
     let (status, res) = send_json(
         &app,
         put_files(
-            "/api/tree/layers/30-device.dev-1",
+            "/api/tree/layers/40-device.dev-1",
             &[("apps/web/params.yaml", "greeting: bumped\n")],
         ),
     )
@@ -508,7 +509,7 @@ async fn startup_reconcile_renders_unrendered_revision() {
             .map(|(p, d)| (p.clone(), store.blob(d).unwrap().unwrap()))
             .collect();
         manifest.insert(
-            "layers/00-fleet/apps/web/params.yaml".to_string(),
+            "layers/00-all/apps/web/params.yaml".to_string(),
             b"greeting: crashed-mid-render\n".to_vec(),
         );
         store
@@ -598,4 +599,178 @@ async fn layer_chain_membership_shapes_the_render() {
     let (dep_b, _) = pull_compose(token_b, "dev-b").await;
     assert!(dep_a.contains("hello-plant-a"), "site layer applied: {dep_a}");
     assert!(!dep_b.contains("hello-plant-a"), "other site unaffected: {dep_b}");
+}
+
+// ------------------------------------------------------ REV-010 §11.3
+// Device management write paths: PATCH re-render on assignment change,
+// pin holds a device at its current revision, decommission cuts serving.
+
+/// Current manifestVersion of a device, or `None` if never rendered.
+fn manifest_version(state: &AppState, device_id: &str) -> Option<i64> {
+    let conn = state.db.lock().unwrap();
+    conn.query_row(
+        "SELECT manifest_version FROM device_manifests WHERE device_id = ?1",
+        params![device_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+/// Human PATCH (AuthMode::None => anonymous is admin, so no session).
+async fn patch_device(app: &Router, id: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::patch(format!("/api/devices/{id}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    send_json(app, req).await
+}
+
+/// A device with no site assignment renders the base greeting; PATCHing
+/// its site re-renders it (§11.3); a later tag-only PATCH does not.
+#[tokio::test]
+async fn patch_assignment_rerenders_tag_change_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, state) = app(dir.path());
+    let token = add_device(&state, "dev-1", None); // unassigned
+
+    author_web_app(&app).await;
+    // Site override that changes the rendered app content.
+    let (status, _) = send_json(
+        &app,
+        put_files(
+            "/api/tree/layers/20-site.plant-a",
+            &[("apps/web/params.yaml", "greeting: hello-plant-a\n")],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Baseline render (poll drives ensure_current).
+    let (status, _, _) = send(&app, get_as("/api/reeve/v1/manifest", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v1 = manifest_version(&state, "dev-1").expect("rendered");
+
+    // Assignment change => re-render. The response reflects the new site.
+    let (status, body) = patch_device(&app, "dev-1", json!({ "site": "plant-a" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["site"], "plant-a");
+    let v2 = manifest_version(&state, "dev-1").expect("re-rendered");
+    assert!(v2 > v1, "assignment change must bump manifestVersion: {v1} -> {v2}");
+
+    // Verify the site layer actually applied to the served bundle.
+    let (_, _, body) = send(&app, get_as("/api/reeve/v1/manifest", &token)).await;
+    let bundle = parse_manifest(&body).bundle.expect("bundle");
+    let (_, _, oci) = send(
+        &app,
+        get_as(&format!("{}/manifests/{}", bundle.url, bundle.digest), &token),
+    )
+    .await;
+    let oci: Value = serde_json::from_slice(&oci).unwrap();
+    let layer = oci["layers"][0]["digest"].as_str().unwrap().to_string();
+    let (_, _, tarball) = send(&app, get_as(&format!("{}/blobs/{layer}", bundle.url), &token)).await;
+    let files = gunzip_untar(&tarball);
+    let dep = String::from_utf8(files["apps/web/deployment.yaml"].clone()).unwrap();
+    assert!(dep.contains("hello-plant-a"), "site override applied after PATCH: {dep}");
+
+    // Tag-only change => NO re-render (§11.3).
+    let (status, body) = patch_device(&app, "dev-1", json!({ "tags": { "env": "prod" } })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["tags"]["env"], "prod");
+    assert_eq!(body["labels"]["env"], "prod", "tags mirror labels");
+    let v3 = manifest_version(&state, "dev-1").expect("still rendered");
+    assert_eq!(v3, v2, "a tag change must not re-render");
+
+    // Clearing an assignment (null) is a change too.
+    let (status, body) = patch_device(&app, "dev-1", json!({ "site": null })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["site"], Value::Null);
+    let v4 = manifest_version(&state, "dev-1").expect("re-rendered");
+    assert!(v4 > v3, "unassigning site re-renders back to base: {v3} -> {v4}");
+}
+
+/// A pinned device holds its manifest at its current revision through a
+/// fleet-wide deploy; an unpinned peer moves (§11.3).
+#[tokio::test]
+async fn pinned_device_not_moved_by_deploy() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, state) = app(dir.path());
+    let _t1 = add_device(&state, "dev-pinned", Some("plant-a"));
+    let _t2 = add_device(&state, "dev-free", Some("plant-a"));
+
+    author_web_app(&app).await;
+    reeve_server::render::render_all(&state).expect("baseline render");
+    let pinned_v1 = manifest_version(&state, "dev-pinned").expect("rendered");
+    let free_v1 = manifest_version(&state, "dev-free").expect("rendered");
+
+    // Pin one device (no re-render needed — it holds where it is).
+    let (status, body) = patch_device(&app, "dev-pinned", json!({ "pinned": true })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["pinned"], true);
+
+    // Fleet-wide deploy: add a second app to the base layer, changing
+    // the rendered content set for every device.
+    let (status, _) = send_json(
+        &app,
+        put_files(
+            "/api/tree/layers/00-all",
+            &[
+                ("apps/web/app.yaml", "package:\n  name: web\n  version: 1.0.0\n"),
+                ("apps/web2/app.yaml", "package:\n  name: web\n  version: 1.0.0\n"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    reeve_server::render::render_all(&state).expect("deploy render");
+
+    let pinned_v2 = manifest_version(&state, "dev-pinned").expect("rendered");
+    let free_v2 = manifest_version(&state, "dev-free").expect("rendered");
+    assert_eq!(pinned_v2, pinned_v1, "pinned device holds at its revision");
+    assert!(free_v2 > free_v1, "unpinned peer moves with the deploy: {free_v1} -> {free_v2}");
+
+    // Unpin: the next render pass catches it up to head.
+    let (status, _) = patch_device(&app, "dev-pinned", json!({ "pinned": false })).await;
+    assert_eq!(status, StatusCode::OK);
+    reeve_server::render::render_all(&state).expect("catch-up render");
+    let pinned_v3 = manifest_version(&state, "dev-pinned").expect("rendered");
+    assert!(pinned_v3 > pinned_v2, "unpinning releases the hold: {pinned_v2} -> {pinned_v3}");
+}
+
+/// Decommission revokes the device credential and tombstones the device
+/// so its desired state stops being served (§11.3). Idempotent.
+#[tokio::test]
+async fn decommission_revokes_and_stops_serving() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, state) = app(dir.path());
+    let token = add_device(&state, "dev-1", Some("plant-a"));
+    author_web_app(&app).await;
+
+    // Serving works before decommission.
+    let (status, _, _) = send(&app, get_as("/api/reeve/v1/manifest", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(manifest_version(&state, "dev-1").is_some());
+
+    // Decommission (operator+; AuthMode::None => admin).
+    let req = Request::post("/api/devices/dev-1/decommission")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The credential no longer authenticates (D1 full cutoff).
+    let (status, _, _) = send(&app, get_as("/api/reeve/v1/manifest", &token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "revoked token must not poll");
+
+    // The served manifest row is gone; the render pass skips it.
+    assert!(manifest_version(&state, "dev-1").is_none(), "manifest tombstoned");
+    reeve_server::render::render_all(&state).expect("render skips decommissioned");
+    assert!(manifest_version(&state, "dev-1").is_none(), "stays gone after a render pass");
+
+    // Idempotent.
+    let req = Request::post("/api/devices/dev-1/decommission")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }

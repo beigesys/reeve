@@ -6,16 +6,20 @@
  * OpenAPI spec version: 0.1.0
  */
 import {
+  useMutation,
   useQuery
 } from '@tanstack/react-query';
 import type {
   DataTag,
   DefinedInitialDataOptions,
   DefinedUseQueryResult,
+  MutationFunction,
   QueryClient,
   QueryFunction,
   QueryKey,
   UndefinedInitialDataOptions,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult
 } from '@tanstack/react-query';
@@ -25,7 +29,8 @@ import type {
   DeviceSummary,
   ErrorBody,
   JournalPage,
-  JournalParams
+  JournalParams,
+  PatchDeviceRequest
 } from '../../model';
 
 
@@ -316,7 +321,228 @@ export function useDetail<TData = Awaited<ReturnType<typeof detail>>, TError = v
 
 
 
-export type journalResponse200 = {
+export type patchResponse200 = {
+  data: DeviceDetail
+  status: 200
+}
+
+export type patchResponse401 = {
+  data: void
+  status: 401
+}
+
+export type patchResponse403 = {
+  data: void
+  status: 403
+}
+
+export type patchResponse404 = {
+  data: ErrorBody
+  status: 404
+}
+
+export type patchResponseSuccess = (patchResponse200) & {
+  headers: Headers;
+};
+export type patchResponseError = (patchResponse401 | patchResponse403 | patchResponse404) & {
+  headers: Headers;
+};
+
+export type patchResponse = (patchResponseSuccess | patchResponseError)
+
+export const getPatchUrl = (deviceId: string,) => {
+
+
+
+
+  return `/api/devices/${deviceId}`
+}
+
+/**
+ * @summary PATCH /api/devices/{device_id} (operator+) — partial device update
+(spec/reeve/11-fleet-model.md §11.3). Re-renders on any
+fleet/site/type change; tag/displayName/pin changes do not re-render.
+ */
+export const patch = async (deviceId: string,
+    patchDeviceRequest: PatchDeviceRequest, options?: RequestInit): Promise<patchResponse> => {
+
+  const res = await fetch(getPatchUrl(deviceId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(patchDeviceRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: patchResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as patchResponse
+}
+
+
+
+
+
+export const getPatchMutationOptions = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patch>>, TError,{deviceId: string;data: PatchDeviceRequest}, TContext>, fetch?: RequestInit}
+): UseMutationOptions<Awaited<ReturnType<typeof patch>>, TError,{deviceId: string;data: PatchDeviceRequest}, TContext> => {
+
+const mutationKey = ['patch'];
+const {mutation: mutationOptions, fetch: fetchOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, fetch: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patch>>, {deviceId: string;data: PatchDeviceRequest}> = (props) => {
+          const {deviceId,data} = props ?? {};
+
+          return  patch(deviceId,data,fetchOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchMutationResult = NonNullable<Awaited<ReturnType<typeof patch>>>
+    export type PatchMutationBody = PatchDeviceRequest
+    export type PatchMutationError = void | ErrorBody
+
+    /**
+ * @summary PATCH /api/devices/{device_id} (operator+) — partial device update
+(spec/reeve/11-fleet-model.md §11.3). Re-renders on any
+fleet/site/type change; tag/displayName/pin changes do not re-render.
+ */
+export const usePatch = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patch>>, TError,{deviceId: string;data: PatchDeviceRequest}, TContext>, fetch?: RequestInit}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patch>>,
+        TError,
+        {deviceId: string;data: PatchDeviceRequest},
+        TContext
+      > => {
+      return useMutation(getPatchMutationOptions(options), queryClient);
+    }
+    export type decommissionResponse204 = {
+  data: void
+  status: 204
+}
+
+export type decommissionResponse401 = {
+  data: void
+  status: 401
+}
+
+export type decommissionResponse403 = {
+  data: void
+  status: 403
+}
+
+export type decommissionResponse404 = {
+  data: ErrorBody
+  status: 404
+}
+
+export type decommissionResponseSuccess = (decommissionResponse204) & {
+  headers: Headers;
+};
+export type decommissionResponseError = (decommissionResponse401 | decommissionResponse403 | decommissionResponse404) & {
+  headers: Headers;
+};
+
+export type decommissionResponse = (decommissionResponseSuccess | decommissionResponseError)
+
+export const getDecommissionUrl = (deviceId: string,) => {
+
+
+
+
+  return `/api/devices/${deviceId}/decommission`
+}
+
+/**
+ * @summary POST /api/devices/{device_id}/decommission (operator+) — revoke the
+device credential(s) and tombstone the device so its desired state
+stops being served (spec/reeve/11-fleet-model.md §11.3). Idempotent.
+ */
+export const decommission = async (deviceId: string, options?: RequestInit): Promise<decommissionResponse> => {
+
+  const res = await fetch(getDecommissionUrl(deviceId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: decommissionResponse['data'] = body ? JSON.parse(body) : undefined
+  return { data, status: res.status, headers: res.headers } as decommissionResponse
+}
+
+
+
+
+
+export const getDecommissionMutationOptions = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof decommission>>, TError,{deviceId: string}, TContext>, fetch?: RequestInit}
+): UseMutationOptions<Awaited<ReturnType<typeof decommission>>, TError,{deviceId: string}, TContext> => {
+
+const mutationKey = ['decommission'];
+const {mutation: mutationOptions, fetch: fetchOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, fetch: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof decommission>>, {deviceId: string}> = (props) => {
+          const {deviceId} = props ?? {};
+
+          return  decommission(deviceId,fetchOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DecommissionMutationResult = NonNullable<Awaited<ReturnType<typeof decommission>>>
+
+    export type DecommissionMutationError = void | ErrorBody
+
+    /**
+ * @summary POST /api/devices/{device_id}/decommission (operator+) — revoke the
+device credential(s) and tombstone the device so its desired state
+stops being served (spec/reeve/11-fleet-model.md §11.3). Idempotent.
+ */
+export const useDecommission = <TError = void | ErrorBody,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof decommission>>, TError,{deviceId: string}, TContext>, fetch?: RequestInit}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof decommission>>,
+        TError,
+        {deviceId: string},
+        TContext
+      > => {
+      return useMutation(getDecommissionMutationOptions(options), queryClient);
+    }
+    export type journalResponse200 = {
   data: JournalPage
   status: 200
 }

@@ -18,18 +18,22 @@ import { Route as AppSecretsIndexRouteImport } from './routes/_app/secrets/index
 import { Route as AppRolloutsIndexRouteImport } from './routes/_app/rollouts/index'
 import { Route as AppPackagesIndexRouteImport } from './routes/_app/packages/index'
 import { Route as AppOpsIndexRouteImport } from './routes/_app/ops/index'
+import { Route as AppHistoryIndexRouteImport } from './routes/_app/history/index'
+import { Route as AppFleetIndexRouteImport } from './routes/_app/fleet/index'
 import { Route as AppEnrollmentIndexRouteImport } from './routes/_app/enrollment/index'
 import { Route as AppDevicesIndexRouteImport } from './routes/_app/devices/index'
+import { Route as AppDeployIndexRouteImport } from './routes/_app/deploy/index'
 import { Route as AppSecretsSetRouteImport } from './routes/_app/secrets/set'
 import { Route as AppRolloutsNewRouteImport } from './routes/_app/rollouts/new'
 import { Route as AppRolloutsRolloutIdRouteImport } from './routes/_app/rollouts/$rollout-id'
 import { Route as AppPackagesNewRouteImport } from './routes/_app/packages/new'
 import { Route as AppEnrollmentNewRouteImport } from './routes/_app/enrollment/new'
-import { Route as AppDevicesDeviceIdRouteImport } from './routes/_app/devices/$device-id'
 import { Route as AppTreeRevisionsIndexRouteImport } from './routes/_app/tree/revisions/index'
+import { Route as AppDevicesDeviceIdIndexRouteImport } from './routes/_app/devices/$device-id/index'
 import { Route as AppTreeRevisionsRevisionIdRouteImport } from './routes/_app/tree/revisions/$revision-id'
 import { Route as AppPackagesNameVersionRouteImport } from './routes/_app/packages/$name.$version'
 import { Route as AppOpsTierTokensNewRouteImport } from './routes/_app/ops/tier-tokens/new'
+import { Route as AppDevicesDeviceIdEditRouteImport } from './routes/_app/devices/$device-id/edit'
 import { Route as AppTreeLayersLayerIndexRouteImport } from './routes/_app/tree/layers/$layer/index'
 import { Route as AppTreeLayersLayerEditRouteImport } from './routes/_app/tree/layers/$layer/edit'
 
@@ -77,6 +81,16 @@ const AppOpsIndexRoute = AppOpsIndexRouteImport.update({
   path: '/ops/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHistoryIndexRoute = AppHistoryIndexRouteImport.update({
+  id: '/history/',
+  path: '/history/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFleetIndexRoute = AppFleetIndexRouteImport.update({
+  id: '/fleet/',
+  path: '/fleet/',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppEnrollmentIndexRoute = AppEnrollmentIndexRouteImport.update({
   id: '/enrollment/',
   path: '/enrollment/',
@@ -85,6 +99,11 @@ const AppEnrollmentIndexRoute = AppEnrollmentIndexRouteImport.update({
 const AppDevicesIndexRoute = AppDevicesIndexRouteImport.update({
   id: '/devices/',
   path: '/devices/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDeployIndexRoute = AppDeployIndexRouteImport.update({
+  id: '/deploy/',
+  path: '/deploy/',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSecretsSetRoute = AppSecretsSetRouteImport.update({
@@ -112,14 +131,14 @@ const AppEnrollmentNewRoute = AppEnrollmentNewRouteImport.update({
   path: '/enrollment/new',
   getParentRoute: () => AppRoute,
 } as any)
-const AppDevicesDeviceIdRoute = AppDevicesDeviceIdRouteImport.update({
-  id: '/devices/$device-id',
-  path: '/devices/$device-id',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppTreeRevisionsIndexRoute = AppTreeRevisionsIndexRouteImport.update({
   id: '/tree/revisions/',
   path: '/tree/revisions/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDevicesDeviceIdIndexRoute = AppDevicesDeviceIdIndexRouteImport.update({
+  id: '/devices/$device-id/',
+  path: '/devices/$device-id/',
   getParentRoute: () => AppRoute,
 } as any)
 const AppTreeRevisionsRevisionIdRoute =
@@ -138,6 +157,11 @@ const AppOpsTierTokensNewRoute = AppOpsTierTokensNewRouteImport.update({
   path: '/ops/tier-tokens/new',
   getParentRoute: () => AppRoute,
 } as any)
+const AppDevicesDeviceIdEditRoute = AppDevicesDeviceIdEditRouteImport.update({
+  id: '/devices/$device-id/edit',
+  path: '/devices/$device-id/edit',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppTreeLayersLayerIndexRoute = AppTreeLayersLayerIndexRouteImport.update({
   id: '/tree/layers/$layer/',
   path: '/tree/layers/$layer/',
@@ -153,22 +177,26 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
-  '/devices/$device-id': typeof AppDevicesDeviceIdRoute
   '/enrollment/new': typeof AppEnrollmentNewRoute
   '/packages/new': typeof AppPackagesNewRoute
   '/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/rollouts/new': typeof AppRolloutsNewRoute
   '/secrets/set': typeof AppSecretsSetRoute
+  '/deploy/': typeof AppDeployIndexRoute
   '/devices/': typeof AppDevicesIndexRoute
   '/enrollment/': typeof AppEnrollmentIndexRoute
+  '/fleet/': typeof AppFleetIndexRoute
+  '/history/': typeof AppHistoryIndexRoute
   '/ops/': typeof AppOpsIndexRoute
   '/packages/': typeof AppPackagesIndexRoute
   '/rollouts/': typeof AppRolloutsIndexRoute
   '/secrets/': typeof AppSecretsIndexRoute
   '/tree/': typeof AppTreeIndexRoute
+  '/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
   '/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/tree/revisions/$revision-id': typeof AppTreeRevisionsRevisionIdRoute
+  '/devices/$device-id/': typeof AppDevicesDeviceIdIndexRoute
   '/tree/revisions/': typeof AppTreeRevisionsIndexRoute
   '/tree/layers/$layer/edit': typeof AppTreeLayersLayerEditRoute
   '/tree/layers/$layer/': typeof AppTreeLayersLayerIndexRoute
@@ -177,22 +205,26 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/': typeof AppIndexRoute
-  '/devices/$device-id': typeof AppDevicesDeviceIdRoute
   '/enrollment/new': typeof AppEnrollmentNewRoute
   '/packages/new': typeof AppPackagesNewRoute
   '/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/rollouts/new': typeof AppRolloutsNewRoute
   '/secrets/set': typeof AppSecretsSetRoute
+  '/deploy': typeof AppDeployIndexRoute
   '/devices': typeof AppDevicesIndexRoute
   '/enrollment': typeof AppEnrollmentIndexRoute
+  '/fleet': typeof AppFleetIndexRoute
+  '/history': typeof AppHistoryIndexRoute
   '/ops': typeof AppOpsIndexRoute
   '/packages': typeof AppPackagesIndexRoute
   '/rollouts': typeof AppRolloutsIndexRoute
   '/secrets': typeof AppSecretsIndexRoute
   '/tree': typeof AppTreeIndexRoute
+  '/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
   '/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/tree/revisions/$revision-id': typeof AppTreeRevisionsRevisionIdRoute
+  '/devices/$device-id': typeof AppDevicesDeviceIdIndexRoute
   '/tree/revisions': typeof AppTreeRevisionsIndexRoute
   '/tree/layers/$layer/edit': typeof AppTreeLayersLayerEditRoute
   '/tree/layers/$layer': typeof AppTreeLayersLayerIndexRoute
@@ -203,22 +235,26 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/_app/': typeof AppIndexRoute
-  '/_app/devices/$device-id': typeof AppDevicesDeviceIdRoute
   '/_app/enrollment/new': typeof AppEnrollmentNewRoute
   '/_app/packages/new': typeof AppPackagesNewRoute
   '/_app/rollouts/$rollout-id': typeof AppRolloutsRolloutIdRoute
   '/_app/rollouts/new': typeof AppRolloutsNewRoute
   '/_app/secrets/set': typeof AppSecretsSetRoute
+  '/_app/deploy/': typeof AppDeployIndexRoute
   '/_app/devices/': typeof AppDevicesIndexRoute
   '/_app/enrollment/': typeof AppEnrollmentIndexRoute
+  '/_app/fleet/': typeof AppFleetIndexRoute
+  '/_app/history/': typeof AppHistoryIndexRoute
   '/_app/ops/': typeof AppOpsIndexRoute
   '/_app/packages/': typeof AppPackagesIndexRoute
   '/_app/rollouts/': typeof AppRolloutsIndexRoute
   '/_app/secrets/': typeof AppSecretsIndexRoute
   '/_app/tree/': typeof AppTreeIndexRoute
+  '/_app/devices/$device-id/edit': typeof AppDevicesDeviceIdEditRoute
   '/_app/ops/tier-tokens/new': typeof AppOpsTierTokensNewRoute
   '/_app/packages/$name/$version': typeof AppPackagesNameVersionRoute
   '/_app/tree/revisions/$revision-id': typeof AppTreeRevisionsRevisionIdRoute
+  '/_app/devices/$device-id/': typeof AppDevicesDeviceIdIndexRoute
   '/_app/tree/revisions/': typeof AppTreeRevisionsIndexRoute
   '/_app/tree/layers/$layer/edit': typeof AppTreeLayersLayerEditRoute
   '/_app/tree/layers/$layer/': typeof AppTreeLayersLayerIndexRoute
@@ -229,22 +265,26 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/setup'
-    | '/devices/$device-id'
     | '/enrollment/new'
     | '/packages/new'
     | '/rollouts/$rollout-id'
     | '/rollouts/new'
     | '/secrets/set'
+    | '/deploy/'
     | '/devices/'
     | '/enrollment/'
+    | '/fleet/'
+    | '/history/'
     | '/ops/'
     | '/packages/'
     | '/rollouts/'
     | '/secrets/'
     | '/tree/'
+    | '/devices/$device-id/edit'
     | '/ops/tier-tokens/new'
     | '/packages/$name/$version'
     | '/tree/revisions/$revision-id'
+    | '/devices/$device-id/'
     | '/tree/revisions/'
     | '/tree/layers/$layer/edit'
     | '/tree/layers/$layer/'
@@ -253,22 +293,26 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/'
-    | '/devices/$device-id'
     | '/enrollment/new'
     | '/packages/new'
     | '/rollouts/$rollout-id'
     | '/rollouts/new'
     | '/secrets/set'
+    | '/deploy'
     | '/devices'
     | '/enrollment'
+    | '/fleet'
+    | '/history'
     | '/ops'
     | '/packages'
     | '/rollouts'
     | '/secrets'
     | '/tree'
+    | '/devices/$device-id/edit'
     | '/ops/tier-tokens/new'
     | '/packages/$name/$version'
     | '/tree/revisions/$revision-id'
+    | '/devices/$device-id'
     | '/tree/revisions'
     | '/tree/layers/$layer/edit'
     | '/tree/layers/$layer'
@@ -278,22 +322,26 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/_app/'
-    | '/_app/devices/$device-id'
     | '/_app/enrollment/new'
     | '/_app/packages/new'
     | '/_app/rollouts/$rollout-id'
     | '/_app/rollouts/new'
     | '/_app/secrets/set'
+    | '/_app/deploy/'
     | '/_app/devices/'
     | '/_app/enrollment/'
+    | '/_app/fleet/'
+    | '/_app/history/'
     | '/_app/ops/'
     | '/_app/packages/'
     | '/_app/rollouts/'
     | '/_app/secrets/'
     | '/_app/tree/'
+    | '/_app/devices/$device-id/edit'
     | '/_app/ops/tier-tokens/new'
     | '/_app/packages/$name/$version'
     | '/_app/tree/revisions/$revision-id'
+    | '/_app/devices/$device-id/'
     | '/_app/tree/revisions/'
     | '/_app/tree/layers/$layer/edit'
     | '/_app/tree/layers/$layer/'
@@ -370,6 +418,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppOpsIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/history/': {
+      id: '/_app/history/'
+      path: '/history'
+      fullPath: '/history/'
+      preLoaderRoute: typeof AppHistoryIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/fleet/': {
+      id: '/_app/fleet/'
+      path: '/fleet'
+      fullPath: '/fleet/'
+      preLoaderRoute: typeof AppFleetIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/enrollment/': {
       id: '/_app/enrollment/'
       path: '/enrollment'
@@ -382,6 +444,13 @@ declare module '@tanstack/react-router' {
       path: '/devices'
       fullPath: '/devices/'
       preLoaderRoute: typeof AppDevicesIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/deploy/': {
+      id: '/_app/deploy/'
+      path: '/deploy'
+      fullPath: '/deploy/'
+      preLoaderRoute: typeof AppDeployIndexRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/secrets/set': {
@@ -419,18 +488,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEnrollmentNewRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/devices/$device-id': {
-      id: '/_app/devices/$device-id'
-      path: '/devices/$device-id'
-      fullPath: '/devices/$device-id'
-      preLoaderRoute: typeof AppDevicesDeviceIdRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/tree/revisions/': {
       id: '/_app/tree/revisions/'
       path: '/tree/revisions'
       fullPath: '/tree/revisions/'
       preLoaderRoute: typeof AppTreeRevisionsIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/devices/$device-id/': {
+      id: '/_app/devices/$device-id/'
+      path: '/devices/$device-id'
+      fullPath: '/devices/$device-id/'
+      preLoaderRoute: typeof AppDevicesDeviceIdIndexRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/tree/revisions/$revision-id': {
@@ -454,6 +523,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppOpsTierTokensNewRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/devices/$device-id/edit': {
+      id: '/_app/devices/$device-id/edit'
+      path: '/devices/$device-id/edit'
+      fullPath: '/devices/$device-id/edit'
+      preLoaderRoute: typeof AppDevicesDeviceIdEditRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/tree/layers/$layer/': {
       id: '/_app/tree/layers/$layer/'
       path: '/tree/layers/$layer'
@@ -473,22 +549,26 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
-  AppDevicesDeviceIdRoute: typeof AppDevicesDeviceIdRoute
   AppEnrollmentNewRoute: typeof AppEnrollmentNewRoute
   AppPackagesNewRoute: typeof AppPackagesNewRoute
   AppRolloutsRolloutIdRoute: typeof AppRolloutsRolloutIdRoute
   AppRolloutsNewRoute: typeof AppRolloutsNewRoute
   AppSecretsSetRoute: typeof AppSecretsSetRoute
+  AppDeployIndexRoute: typeof AppDeployIndexRoute
   AppDevicesIndexRoute: typeof AppDevicesIndexRoute
   AppEnrollmentIndexRoute: typeof AppEnrollmentIndexRoute
+  AppFleetIndexRoute: typeof AppFleetIndexRoute
+  AppHistoryIndexRoute: typeof AppHistoryIndexRoute
   AppOpsIndexRoute: typeof AppOpsIndexRoute
   AppPackagesIndexRoute: typeof AppPackagesIndexRoute
   AppRolloutsIndexRoute: typeof AppRolloutsIndexRoute
   AppSecretsIndexRoute: typeof AppSecretsIndexRoute
   AppTreeIndexRoute: typeof AppTreeIndexRoute
+  AppDevicesDeviceIdEditRoute: typeof AppDevicesDeviceIdEditRoute
   AppOpsTierTokensNewRoute: typeof AppOpsTierTokensNewRoute
   AppPackagesNameVersionRoute: typeof AppPackagesNameVersionRoute
   AppTreeRevisionsRevisionIdRoute: typeof AppTreeRevisionsRevisionIdRoute
+  AppDevicesDeviceIdIndexRoute: typeof AppDevicesDeviceIdIndexRoute
   AppTreeRevisionsIndexRoute: typeof AppTreeRevisionsIndexRoute
   AppTreeLayersLayerEditRoute: typeof AppTreeLayersLayerEditRoute
   AppTreeLayersLayerIndexRoute: typeof AppTreeLayersLayerIndexRoute
@@ -496,22 +576,26 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
-  AppDevicesDeviceIdRoute: AppDevicesDeviceIdRoute,
   AppEnrollmentNewRoute: AppEnrollmentNewRoute,
   AppPackagesNewRoute: AppPackagesNewRoute,
   AppRolloutsRolloutIdRoute: AppRolloutsRolloutIdRoute,
   AppRolloutsNewRoute: AppRolloutsNewRoute,
   AppSecretsSetRoute: AppSecretsSetRoute,
+  AppDeployIndexRoute: AppDeployIndexRoute,
   AppDevicesIndexRoute: AppDevicesIndexRoute,
   AppEnrollmentIndexRoute: AppEnrollmentIndexRoute,
+  AppFleetIndexRoute: AppFleetIndexRoute,
+  AppHistoryIndexRoute: AppHistoryIndexRoute,
   AppOpsIndexRoute: AppOpsIndexRoute,
   AppPackagesIndexRoute: AppPackagesIndexRoute,
   AppRolloutsIndexRoute: AppRolloutsIndexRoute,
   AppSecretsIndexRoute: AppSecretsIndexRoute,
   AppTreeIndexRoute: AppTreeIndexRoute,
+  AppDevicesDeviceIdEditRoute: AppDevicesDeviceIdEditRoute,
   AppOpsTierTokensNewRoute: AppOpsTierTokensNewRoute,
   AppPackagesNameVersionRoute: AppPackagesNameVersionRoute,
   AppTreeRevisionsRevisionIdRoute: AppTreeRevisionsRevisionIdRoute,
+  AppDevicesDeviceIdIndexRoute: AppDevicesDeviceIdIndexRoute,
   AppTreeRevisionsIndexRoute: AppTreeRevisionsIndexRoute,
   AppTreeLayersLayerEditRoute: AppTreeLayersLayerEditRoute,
   AppTreeLayersLayerIndexRoute: AppTreeLayersLayerIndexRoute,

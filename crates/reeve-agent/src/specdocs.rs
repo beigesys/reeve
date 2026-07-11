@@ -4,7 +4,7 @@
 //! specdocs.rs; duplicated because every crate stands alone (Law 2).
 //!
 //! Index order is the numeric file order the 00-INDEX.md file map
-//! declares (00-INDEX, 01-framework, … 10-secrets); the moved-notice
+//! declares (00-INDEX, 01-framework, … 11-fleet-model); the moved-notice
 //! stubs (SPEC.md, DECISIONS.md, README.md) are not specification
 //! text and are excluded from the embed.
 
@@ -81,8 +81,8 @@ mod tests {
     fn sections_are_complete_and_index_ordered() {
         let files = section_files();
         assert_eq!(files.first().map(String::as_str), Some("00-INDEX.md"));
-        assert_eq!(files.last().map(String::as_str), Some("10-secrets.md"));
-        assert_eq!(files.len(), 11);
+        assert_eq!(files.last().map(String::as_str), Some("11-fleet-model.md"));
+        assert_eq!(files.len(), 12);
         let mut sorted = files.clone();
         sorted.sort();
         assert_eq!(files, sorted);

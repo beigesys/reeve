@@ -88,13 +88,30 @@ pub struct DeviceSummary {
     /// Unix seconds.
     pub enrolled_at: i64,
     /// Free-form labels (docs/decisions/tree-render.md D12: labels
-    /// group and filter, never configure).
+    /// group and filter, never configure). Alias: `tags` (§11.2 — the
+    /// operator-facing name for the same column).
     pub labels: BTreeMap<String, String>,
-    /// Layer-chain membership (D11: fleet -> class? -> region -> site
-    /// -> device), each nullable.
+    /// Free-form key/value tags (spec/reeve/11-fleet-model.md §11.2) —
+    /// the same data as `labels`, under the fleet-model name the UI
+    /// uses. Ad-hoc grouping/filtering/rollout cohorts only; never
+    /// selects config (that is the layer chain's job).
+    pub tags: BTreeMap<String, String>,
+    /// Human rename, distinct from `device_id` (§11.3); `null` => fall
+    /// back to hostname.
+    pub display_name: Option<String>,
+    /// Hierarchy-tier assignment (spec/reeve/11-fleet-model.md §11.1:
+    /// all -> fleet? -> site? -> type? -> device), each nullable.
+    pub fleet: Option<String>,
+    pub site: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    /// Retained V2 columns, dormant after the REV-010 taxonomy remap
+    /// (kept for compatibility; no longer feed the config chain).
     pub class: Option<String>,
     pub region: Option<String>,
-    pub site: Option<String>,
+    /// Pin hold (§11.3): the device keeps its current desired config and
+    /// is excluded from new deploys/rollouts until unpinned.
+    pub pinned: bool,
     /// Identity superseded by a newer enrollment from the same
     /// hostname (docs/decisions/agent.md D4 wiped-box case).
     pub stale: bool,
@@ -192,16 +209,21 @@ struct DeviceRow {
     agent_version: String,
     enrolled_at: i64,
     labels: BTreeMap<String, String>,
+    fleet: Option<String>,
+    site: Option<String>,
+    r#type: Option<String>,
     class: Option<String>,
     region: Option<String>,
-    site: Option<String>,
+    display_name: Option<String>,
+    pinned: bool,
     stale: bool,
     tier_origin: Option<String>,
     last_seen_at: Option<i64>,
 }
 
 const DEVICE_COLUMNS: &str = "device_id, hostname, arch, agent_version, enrolled_at, \
-     labels, class, region, site, stale, tier_origin, last_seen_at";
+     labels, fleet, site, \"type\", class, region, display_name, pinned, stale, \
+     tier_origin, last_seen_at";
 
 fn row_to_device(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
     let labels_json: String = r.get(5)?;
@@ -212,12 +234,16 @@ fn row_to_device(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
         agent_version: r.get(3)?,
         enrolled_at: r.get(4)?,
         labels: serde_json::from_str(&labels_json).unwrap_or_default(),
-        class: r.get(6)?,
-        region: r.get(7)?,
-        site: r.get(8)?,
-        stale: r.get::<_, i64>(9)? != 0,
-        tier_origin: r.get(10)?,
-        last_seen_at: r.get(11)?,
+        fleet: r.get(6)?,
+        site: r.get(7)?,
+        r#type: r.get(8)?,
+        class: r.get(9)?,
+        region: r.get(10)?,
+        display_name: r.get(11)?,
+        pinned: r.get::<_, i64>(12)? != 0,
+        stale: r.get::<_, i64>(13)? != 0,
+        tier_origin: r.get(14)?,
+        last_seen_at: r.get(15)?,
     })
 }
 
@@ -270,10 +296,15 @@ fn summarize(state: &AppState, conn: &Connection, row: DeviceRow) -> rusqlite::R
         arch: row.arch,
         agent_version: row.agent_version,
         enrolled_at: row.enrolled_at,
+        tags: row.labels.clone(),
         labels: row.labels,
+        display_name: row.display_name,
+        fleet: row.fleet,
+        site: row.site,
+        r#type: row.r#type,
         class: row.class,
         region: row.region,
-        site: row.site,
+        pinned: row.pinned,
         stale: row.stale,
         tier_origin: row.tier_origin,
         last_seen_at: row.last_seen_at,
@@ -484,6 +515,258 @@ pub async fn journal(
     match result {
         Ok(Some(page)) => Json(page).into_response(),
         Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "unknown device" })),
+        )
+            .into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// serde helper: distinguish an ABSENT field from a `null` one. A field
+/// annotated `#[serde(default, deserialize_with = "double_option")]`
+/// deserializes to `None` when the key is absent (leave unchanged) and
+/// `Some(inner)` when the key is present — `Some(None)` for `null`
+/// (clear the assignment), `Some(Some(v))` for a value (set it).
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
+/// `PATCH /api/devices/{device_id}` body: a partial device update
+/// (spec/reeve/11-fleet-model.md §11.3). Every field is optional;
+/// `null` clears an assignment/rename, an absent field is unchanged.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchDeviceRequest {
+    /// Human rename; `null` clears it (falls back to hostname).
+    #[serde(default, deserialize_with = "double_option")]
+    pub display_name: Option<Option<String>>,
+    /// Hierarchy assignment; `null` unassigns (removes the layer from
+    /// the chain). A change re-renders the device.
+    #[serde(default, deserialize_with = "double_option")]
+    pub fleet: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub site: Option<Option<String>>,
+    #[serde(default, rename = "type", deserialize_with = "double_option")]
+    pub r#type: Option<Option<String>>,
+    /// Pin hold (§11.3). Needs no re-render (the device holds where it
+    /// is; unpinning is picked up on the next poll).
+    pub pinned: Option<bool>,
+    /// Replace the free-form tag set (§11.2). `null` clears all tags.
+    #[serde(default, deserialize_with = "double_option")]
+    pub tags: Option<Option<BTreeMap<String, String>>>,
+}
+
+/// PATCH /api/devices/{device_id} (operator+) — partial device update
+/// (spec/reeve/11-fleet-model.md §11.3). Re-renders on any
+/// fleet/site/type change; tag/displayName/pin changes do not re-render.
+#[utoipa::path(
+    patch,
+    path = "/api/devices/{device_id}",
+    tag = "devices",
+    params(("device_id" = String, Path, description = "Device id")),
+    request_body = PatchDeviceRequest,
+    responses(
+        (status = 200, description = "Updated device detail", body = DeviceDetail),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown device", body = device_api::ErrorBody),
+    ),
+)]
+pub async fn patch(
+    State(state): State<AppState>,
+    identity: Identity,
+    Path(device_id): Path<String>,
+    Json(body): Json<PatchDeviceRequest>,
+) -> Response {
+    if let Err(status) = crate::join_tokens::require_at_least(&state, &identity, Role::Operator) {
+        return status.into_response();
+    }
+
+    // Build the dynamic SET clause. Assignment (fleet/site/type) changes
+    // set `assignment_changed` so we re-render after the write; tag /
+    // display-name / pin changes do not (§11.3).
+    let mut sets: Vec<&str> = Vec::new();
+    let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut assignment_changed = false;
+
+    if let Some(dn) = body.display_name {
+        sets.push("display_name = ?");
+        vals.push(Box::new(dn));
+    }
+    if let Some(f) = body.fleet {
+        sets.push("fleet = ?");
+        vals.push(Box::new(f));
+        assignment_changed = true;
+    }
+    if let Some(s) = body.site {
+        sets.push("site = ?");
+        vals.push(Box::new(s));
+        assignment_changed = true;
+    }
+    if let Some(t) = body.r#type {
+        sets.push("\"type\" = ?");
+        vals.push(Box::new(t));
+        assignment_changed = true;
+    }
+    if let Some(p) = body.pinned {
+        sets.push("pinned = ?");
+        vals.push(Box::new(p as i64));
+    }
+    if let Some(tags) = body.tags {
+        // Present => replace; null => clear to `{}`.
+        let json = match tags {
+            Some(map) => serde_json::to_string(&map).expect("tags map serializes"),
+            None => "{}".to_string(),
+        };
+        sets.push("labels = ?");
+        vals.push(Box::new(json));
+    }
+
+    // Apply the update (if any) and confirm the device exists, dropping
+    // the db lock BEFORE any render (lock order: never hold db across a
+    // render call — state.rs).
+    {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        let exists: Option<i64> = match conn
+            .query_row(
+                "SELECT 1 FROM devices WHERE device_id = ?1",
+                params![device_id],
+                |r| r.get(0),
+            )
+            .optional()
+        {
+            Ok(v) => v,
+            Err(e) => return internal(e),
+        };
+        if exists.is_none() {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "unknown device" })),
+            )
+                .into_response();
+        }
+        if !sets.is_empty() {
+            let sql = format!(
+                "UPDATE devices SET {} WHERE device_id = ?",
+                sets.join(", ")
+            );
+            vals.push(Box::new(device_id.clone()));
+            if let Err(e) = conn.execute(&sql, rusqlite::params_from_iter(vals.iter())) {
+                return internal(e);
+            }
+        }
+        // An assignment change moves the device's layer chain but not the
+        // tree head, so ensure_current's revision fast-path would treat
+        // the device as already current. Invalidate its render bookkeeping
+        // (a sentinel that can never equal a real revision) so the pass
+        // below re-materializes from the new chain; render_one restores it
+        // to head and bumps only if the content actually changed (D3).
+        if assignment_changed
+            && let Err(e) = conn.execute(
+                "UPDATE device_manifests SET rendered_revision = -1 WHERE device_id = ?1",
+                params![device_id],
+            )
+        {
+            return internal(e);
+        }
+    }
+
+    // §11.3: an assignment change moves the layer chain, so re-render.
+    if assignment_changed
+        && let Err(e) = crate::render::ensure_current(&state, &device_id)
+    {
+        warn!(device = %device_id, error = %e, "re-render after device patch failed");
+    }
+
+    // Return the fresh detail.
+    let conn = state.db.lock().expect("db mutex poisoned");
+    let result = (|| -> rusqlite::Result<Option<DeviceDetail>> {
+        let row = conn
+            .query_row(
+                &format!("SELECT {DEVICE_COLUMNS} FROM devices WHERE device_id = ?1"),
+                params![device_id],
+                row_to_device,
+            )
+            .optional()?;
+        let Some(row) = row else { return Ok(None) };
+        let summary = summarize(&state, &conn, row)?;
+        let render = provenance_of(&conn, &device_id)?;
+        Ok(Some(DeviceDetail { summary, render }))
+    })();
+    match result {
+        Ok(Some(detail)) => Json(detail).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "unknown device" })),
+        )
+            .into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// POST /api/devices/{device_id}/decommission (operator+) — revoke the
+/// device credential(s) and tombstone the device so its desired state
+/// stops being served (spec/reeve/11-fleet-model.md §11.3). Idempotent.
+#[utoipa::path(
+    post,
+    path = "/api/devices/{device_id}/decommission",
+    tag = "devices",
+    params(("device_id" = String, Path, description = "Device id")),
+    responses(
+        (status = 204, description = "Decommissioned (idempotent)"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown device", body = device_api::ErrorBody),
+    ),
+)]
+pub async fn decommission(
+    State(state): State<AppState>,
+    identity: Identity,
+    Path(device_id): Path<String>,
+) -> Response {
+    if let Err(status) = crate::join_tokens::require_at_least(&state, &identity, Role::Operator) {
+        return status.into_response();
+    }
+    let mut conn = state.db.lock().expect("db mutex poisoned");
+    let result = (|| -> rusqlite::Result<bool> {
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM devices WHERE device_id = ?1",
+                params![device_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Ok(false);
+        }
+        let tx = conn.transaction()?;
+        // Revoke every active credential (D1: one revocation = full site
+        // cutoff) — every device-facing surface now 401s.
+        crate::device_tokens::revoke_all(&tx, &device_id)?;
+        // Tombstone: mark decommissioned (idempotent — keep the first
+        // timestamp) and drop the served manifest row so the delivery
+        // routes 404 (the render pass already skips decommissioned
+        // devices). Bundle blobs are purged at the next startup.
+        tx.execute(
+            "UPDATE devices SET decommissioned_at = COALESCE(decommissioned_at, ?2)
+             WHERE device_id = ?1",
+            params![device_id, crate::db::now_secs()],
+        )?;
+        tx.execute(
+            "DELETE FROM device_manifests WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    })();
+    match result {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "unknown device" })),
         )

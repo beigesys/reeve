@@ -181,6 +181,27 @@ function CapabilitiesCard() {
           </p>
         ) : (
           <div className="flex flex-col gap-3">
+            <Field label="This server">
+              <span className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    'font-normal',
+                    c.tier === 'site'
+                      ? 'border-blue-500/40 text-blue-600 dark:text-blue-400'
+                      : 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400',
+                  )}
+                >
+                  {c.tier === 'site' ? 'Site gateway' : 'Root (hub)'}
+                </Badge>
+                {c.tier === 'site' && c.site && (
+                  <span className="text-sm text-muted-foreground">
+                    serving {c.site}
+                    {c.upstream ? ' · reports to a hub' : ''}
+                  </span>
+                )}
+              </span>
+            </Field>
             <Field label="Version">
               <span className="font-mono">{c.serverVersion}</span>
             </Field>

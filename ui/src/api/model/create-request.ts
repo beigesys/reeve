@@ -5,29 +5,34 @@
  * Fleet desired-state manager (Margo-inspired). Human API consumed by the reeve UI, plus the device-facing wire surface.
  * OpenAPI spec version: 0.1.0
  */
-import type { CohortSpec } from './cohort-spec';
+import type { CreateRequestTagCohort } from './create-request-tag-cohort';
 import type { GateSpec } from './gate-spec';
+import type { Scope } from './scope';
 
 /**
- * POST /api/rollouts body. Waves: exactly one of `waves` (explicit
- * partition), `strategy` (e.g. `["1", "10%", "rest"]`), `waveCount`,
- * or none (single wave = whole cohort).
+ * POST /api/rollouts body (REV-010 §11.5): a rollout targets a SCOPE
+ * (§11.4) narrowed by an optional tag cohort, resolved to a device set
+ * at creation — NOT a revision id chosen by the operator. The current
+ * desired config (the local head) is pinned server-side and rolled out
+ * in waves. Waves: exactly one of `waves` (explicit partition),
+ * `strategy` (e.g. `["1", "10%", "rest"]`), `waveCount`, or none
+ * (single wave = whole cohort).
  */
 export interface CreateRequest {
-  /**
-     * Hold revision for not-yet-advanced devices; default: the target
-     * revision's parent (see module docs — DECISION below).
-     * @nullable
-     */
-  baselineRevision?: number | null;
-  cohort: CohortSpec;
   /** @nullable */
   failureThreshold?: number | null;
   gate?: GateSpec;
-  /** The source tree revision (§11.1) — an existing local revision. */
-  revision: number;
+  /** The deploy scope (§11.4) this rollout targets. */
+  scope: Scope;
   /** @nullable */
   strategy?: string[] | null;
+  /**
+     * Optional tag cohort narrowing the scope (D12: tags select
+     * cohorts, never configuration). All pairs must match a device's
+     * tags for it to be included.
+     * @nullable
+     */
+  tagCohort?: CreateRequestTagCohort;
   /**
      * @minimum 0
      * @nullable
