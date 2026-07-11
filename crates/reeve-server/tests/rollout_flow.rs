@@ -42,6 +42,7 @@ fn config(data_dir: &FsPath) -> Config {
         zot: None,
         federation: None,
         install_open: false,
+        admin_seed: None,
     }
 }
 

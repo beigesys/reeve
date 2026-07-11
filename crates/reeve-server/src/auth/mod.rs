@@ -42,10 +42,21 @@ pub fn bootstrap(state: &AppState) -> anyhow::Result<BootstrapReport> {
     match &state.cfg.auth {
         AuthMode::Password => {
             if users::count(&conn)? == 0 {
-                let token = sessions::generate_session_token().replace("rvh_", "rvs_");
-                *state.setup_token_hash.lock().expect("setup mutex poisoned") =
-                    Some(device_api::token_hash(&token));
-                report.setup_token = Some(token);
+                if let Some((user, pass)) = &state.cfg.admin_seed {
+                    // Seed a fixed admin (REEVE_ADMIN_USER/PASSWORD) — skip
+                    // the one-time setup token. Idempotent: only runs while
+                    // the users table is empty.
+                    users::create(&conn, user, pass, Role::Admin)?;
+                    report.notices.push(format!(
+                        "seeded admin {user:?} from REEVE_ADMIN_USER/PASSWORD \
+                         (first boot; convenience for dev/automated bring-up)"
+                    ));
+                } else {
+                    let token = sessions::generate_session_token().replace("rvh_", "rvs_");
+                    *state.setup_token_hash.lock().expect("setup mutex poisoned") =
+                        Some(device_api::token_hash(&token));
+                    report.setup_token = Some(token);
+                }
             }
         }
         AuthMode::Proxy(p) => {

@@ -117,6 +117,13 @@ pub struct Config {
     /// on trusted networks. Parsed unconditionally, consumed only by
     /// `embedded-agents` builds. Default false — closed.
     pub install_open: bool,
+    /// Optional first-boot admin seed (REEVE_ADMIN_USER +
+    /// REEVE_ADMIN_PASSWORD). When both are set and the users table is
+    /// empty, password-mode bootstrap creates this admin instead of
+    /// minting a one-time setup token — no token-copying dance. Ignored
+    /// once any user exists (idempotent). Convenience for dev/automated
+    /// bring-up; a real deployment uses the setup flow or proxy SSO.
+    pub admin_seed: Option<(String, String)>,
 }
 
 /// Gateway-tier configuration (spec/reeve/06-federation.md §8.1:
@@ -280,6 +287,14 @@ impl Config {
             Some(other) => bail!("REEVE_INSTALL_OPEN must be true|false, got {other:?}"),
         };
 
+        let admin_seed = match (get("REEVE_ADMIN_USER"), get("REEVE_ADMIN_PASSWORD")) {
+            (Some(u), Some(p)) => Some((u, p)),
+            (Some(_), None) | (None, Some(_)) => {
+                bail!("REEVE_ADMIN_USER and REEVE_ADMIN_PASSWORD must be set together");
+            }
+            (None, None) => None,
+        };
+
         Ok(Config {
             listen,
             data_dir,
@@ -290,6 +305,7 @@ impl Config {
             zot,
             federation,
             install_open,
+            admin_seed,
         })
     }
 
@@ -552,6 +568,15 @@ mod tests {
     #[test]
     fn federation_defaults_to_root() {
         assert!(cfg(&[]).unwrap().federation.is_none());
+    }
+
+    #[test]
+    fn admin_seed_requires_both_or_neither() {
+        assert!(cfg(&[]).unwrap().admin_seed.is_none());
+        let c = cfg(&[("REEVE_ADMIN_USER", "admin"), ("REEVE_ADMIN_PASSWORD", "pw")]).unwrap();
+        assert_eq!(c.admin_seed, Some(("admin".into(), "pw".into())));
+        assert!(cfg(&[("REEVE_ADMIN_USER", "admin")]).is_err());
+        assert!(cfg(&[("REEVE_ADMIN_PASSWORD", "pw")]).is_err());
     }
 
     /// Regression: Docker Compose materializes `${VAR:-}` as `VAR=""`,

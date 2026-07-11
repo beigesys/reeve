@@ -27,6 +27,11 @@ services:
       # password mode: the remote terminal only enables under
       # password/proxy auth (every session is audited with a username).
       - REEVE_AUTH=password
+      # seed a fixed admin on first boot — no setup-token dance.
+      # scripts/dev-up.sh exports these (defaulting admin/password) and
+      # logs in with the same values — one source of truth.
+      - REEVE_ADMIN_USER=${REEVE_ADMIN_USER:-admin}
+      - REEVE_ADMIN_PASSWORD=${REEVE_ADMIN_PASSWORD:-password}
       - REEVE_DURABILITY=none
     volumes:
       - server-data:/data

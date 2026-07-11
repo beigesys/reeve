@@ -32,6 +32,7 @@ pub fn config(data_dir: &FsPath, auth: AuthMode) -> Config {
         zot: None,
         federation: None,
         install_open: false,
+        admin_seed: None,
     }
 }
 

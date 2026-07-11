@@ -437,3 +437,7 @@ One line each: what, where, which doc informed it.
 ## Live-harness bug fixes (found by running the dev fleet)
 - Dockerfile.agent: final base was docker:cli (Alpine/musl) but the binary is glibc-built (bookworm) — "reeve-agent: not found" (dynamic-loader mismatch). Switched to debian:bookworm-slim (glibc), with the docker CLI + compose plugin copied in as static binaries from docker:cli / docker/compose-bin. Binary now runs; /bin/sh present for the terminal to attach to.
 - render.rs: bundle was nulled when apps.is_empty(), but the bundle also carries config/** (the terminal enable file). A config-only tree (terminal enabled, zero apps) produced NO bundle, so config/terminal.yaml never reached the agent. Now builds the bundle whenever the render has content beyond manifest.yaml; only a truly empty render yields the Margo null bundle.
+
+## First-boot admin seed (dev ergonomics)
+- Added REEVE_ADMIN_USER + REEVE_ADMIN_PASSWORD: in password mode, first boot (zero users) seeds this admin instead of minting a one-time setup token — no token-copying dance. Idempotent (only while users table empty); both-or-neither (config error otherwise). Convenience for dev/automated bring-up; real deploys can still use the setup flow or proxy SSO. Seeded in auth::bootstrap.
+- compose.dev.yml interpolates ${REEVE_ADMIN_USER:-admin}/${REEVE_ADMIN_PASSWORD:-password}; scripts/dev-up.sh exports the same vars (same defaults) and logs in with them — one source of truth, no "must match" duplication. Login is now admin/password.

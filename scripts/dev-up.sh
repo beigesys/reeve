@@ -11,8 +11,13 @@ set -euo pipefail
 
 N="${1:-3}"
 BASE="http://localhost:8420"
-ADMIN_USER="admin"
-ADMIN_PASS="reeve-dev"
+# One source of truth: export these so compose.dev.yml interpolates the
+# SAME values the server seeds and we log in with. Override by setting
+# REEVE_ADMIN_USER / REEVE_ADMIN_PASSWORD before running.
+export REEVE_ADMIN_USER="${REEVE_ADMIN_USER:-admin}"
+export REEVE_ADMIN_PASSWORD="${REEVE_ADMIN_PASSWORD:-password}"
+ADMIN_USER="$REEVE_ADMIN_USER"
+ADMIN_PASS="$REEVE_ADMIN_PASSWORD"
 COMPOSE=(docker compose -f compose.dev.yml)
 COOKIES="$(mktemp)"
 trap 'rm -f "$COOKIES"' EXIT
