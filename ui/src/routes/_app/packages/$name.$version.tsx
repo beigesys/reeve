@@ -210,8 +210,8 @@ function PackageDetailPage() {
             <CardHeader>
               <CardTitle className="text-base">margo.yaml</CardTitle>
               <CardDescription>
-                Margo ApplicationDescription (spec/margo; parsed and
-                validated server-side by crates/margo-package).
+                The application's package definition, parsed and validated
+                server-side when the package is uploaded.
               </CardDescription>
             </CardHeader>
             <CardContent>

@@ -80,7 +80,7 @@ function DiffTable({ entries }: { entries: DiffEntry[] }) {
 
 /**
  * Revert = a NEW revision whose layer content equals this revision's
- * (never history rewrites — D13 append-only): bulk-read the layer's
+ * (history is append-only and never rewritten): bulk-read the layer's
  * files at this revision, PUT them as the complete replacement set.
  */
 function RevertLayerButton({

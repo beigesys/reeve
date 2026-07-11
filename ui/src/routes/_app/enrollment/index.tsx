@@ -40,9 +40,8 @@ function tokenState(t: JoinTokenInfo): { label: string; cls: string } {
 }
 
 /**
- * Join tokens (docs/decisions/auth.md D4): single-use by default,
- * TTL'd, listed by hash only — the raw token is shown exactly once at
- * creation.
+ * Join tokens: single-use by default, with a TTL, listed by hash only —
+ * the raw token is shown exactly once at creation.
  */
 function EnrollmentPage() {
   const qc = useQueryClient()

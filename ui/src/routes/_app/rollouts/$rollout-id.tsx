@@ -73,7 +73,7 @@ function WaveCard({ wave }: { wave: WaveStatus }) {
         {gateEntries.length > 0 && (
           <div>
             <h4 className="mb-1 text-xs font-medium text-muted-foreground">
-              Gate evaluation (§11.3)
+              Gate evaluation
             </h4>
             <pre className="overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
               {JSON.stringify(wave.gate, null, 2)}
@@ -230,7 +230,7 @@ function RolloutDetailPage() {
               <Field label="Current wave">
                 {rollout.currentWave + 1} / {rollout.waves.length}
               </Field>
-              <Field label="Pinned unaffected (§11.1)">
+              <Field label="Pinned unaffected">
                 {rollout.pinnedUnaffected}
               </Field>
               <Field label="Gate policy">

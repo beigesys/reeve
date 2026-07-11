@@ -1,10 +1,9 @@
-// SSE -> TanStack Query cache invalidation (spec/reeve/04-status-stream.md §6,
-// docs/decisions/ui.md D10).
+// SSE -> TanStack Query cache invalidation.
 //
 // One EventSource per app to /api/reeve/v1/events. Events are
 // cache-invalidation HINTS, never a data channel: each typed event
 // maps to generated query-key factories (the ONLY query keys the UI
-// uses — D10) and the data of record is refetched from the REST API.
+// uses) and the data of record is refetched from the REST API.
 // A lost event costs latency, never correctness: reconnects replay
 // via `Last-Event-ID` (the browser sends it natively), `reset` and
 // reconnect both invalidate everything, and every view keeps a
@@ -60,16 +59,16 @@ export function useSseConnected(): boolean {
 }
 
 /**
- * Polling fallback (§6.2: every view MUST remain correct with the
- * stream absent — RECOMMENDED 30 s lists, 10 s focused detail).
- * While SSE is up, invalidation drives freshness and polling rests.
+ * Polling fallback: every view stays correct with the stream absent
+ * (typically 30 s for lists, 10 s for focused detail). While SSE is up,
+ * invalidation drives freshness and polling rests.
  */
 export function usePollInterval(whenDownMs: number): number | false {
   const up = useSseConnected()
   return up ? false : whenDownMs
 }
 
-// ---- event -> generated-query-key invalidation map (D10) ----
+// ---- event -> generated-query-key invalidation map ----
 
 function invalidateDevice(qc: QueryClient, deviceId: string) {
   void qc.invalidateQueries({ queryKey: getListQueryKey() })
@@ -87,7 +86,7 @@ function parse<T>(data: string): T | undefined {
 }
 
 const handlers: Record<string, Handler> = {
-  // §6.2: replay was not possible — treat ALL cached state as stale.
+  // Replay was not possible — treat ALL cached state as stale.
   reset: (qc) => {
     void qc.invalidateQueries()
   },
@@ -145,13 +144,13 @@ let refs = 0
 /**
  * Start (or share) the app-wide event stream. Returns a stop handle;
  * the stream closes when the last consumer stops. The browser's
- * EventSource reconnects automatically and sends `Last-Event-ID`
- * (§6.2) — no hand-rolled retry loop.
+ * EventSource reconnects automatically and sends `Last-Event-ID` —
+ * no hand-rolled retry loop.
  */
 export function startSse(queryClient: QueryClient): () => void {
   refs += 1
   if (!source) {
-    // Generated URL builder — never a hand-written path (D10).
+    // Generated URL builder — never a hand-written path.
     const es = new EventSource(getEventsRouteUrl())
     source = es
 
@@ -161,7 +160,7 @@ export function startSse(queryClient: QueryClient): () => void {
       if (droppedSinceOpen) {
         // Anything may have happened while we were away; if the
         // server could not replay it also sent `reset`, but a plain
-        // reconnect still refetches truth (§6.2 at-most-once).
+        // reconnect still refetches truth.
         void queryClient.invalidateQueries()
       }
       droppedSinceOpen = false

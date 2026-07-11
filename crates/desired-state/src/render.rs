@@ -109,6 +109,8 @@ pub fn render(tree: &FileSet, ctx: &RenderContext) -> Result<FileSet, RenderErro
         render_app(tree, ctx, &chain, &app, &mut out)?;
     }
 
+    render_bundle_config(tree, ctx, &chain, &mut out);
+
     let manifest = RenderManifest {
         device_id: &ctx.device_id,
         generation: ctx.generation,
@@ -124,6 +126,28 @@ pub fn render(tree: &FileSet, ctx: &RenderContext) -> Result<FileSet, RenderErro
     );
 
     Ok(out)
+}
+
+/// Bundle-level config — files a layer authors under `config/**`
+/// (sibling to `apps/`), rendered whole-file into the bundle root at
+/// `config/**`. Whole-file replace across the chain (a file is a
+/// scalar, deeper layer wins), same as an app's `files/`. This is how
+/// device-scoped bundle config reaches the agent — e.g. the remote
+/// terminal enable file `config/terminal.yaml`, which the agent reads
+/// from the bundle root and the server re-checks from its own render.
+/// UTF-8 gets `${REEVE_REGISTRY}` substitution; binary is verbatim.
+fn render_bundle_config(tree: &FileSet, ctx: &RenderContext, chain: &[String], out: &mut FileSet) {
+    for layer in chain {
+        let prefix = format!("layers/{layer}/config/");
+        for (path, bytes) in with_prefix(tree, &prefix) {
+            let rel = &path[prefix.len()..];
+            let content = match std::str::from_utf8(bytes) {
+                Ok(text) => substitute_registry(text, ctx).into_bytes(),
+                Err(_) => bytes.clone(),
+            };
+            out.insert(format!("config/{rel}"), content);
+        }
+    }
 }
 
 /// All tree entries starting with `prefix`.

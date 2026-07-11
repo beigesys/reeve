@@ -135,10 +135,9 @@ function OverviewTab({ device }: { device: DeviceDetail }) {
 }
 
 /**
- * Render provenance (docs/decisions/delivery.md D13): which tree
- * revision this device's State Manifest was rendered from, the packed
- * manifestVersion decoded to (epoch, counter), the bundle digest the
- * agent pulls, and each app's secrets_version.
+ * Render provenance: which tree revision this device's State Manifest was
+ * rendered from, the packed manifestVersion decoded to (epoch, counter),
+ * the bundle digest the agent pulls, and each app's secrets_version.
  */
 function RenderProvenanceCard({ render }: { render: RenderProvenance | null }) {
   return (
@@ -294,7 +293,7 @@ function JournalTab({ deviceId }: { deviceId: string }) {
       <CardHeader>
         <CardTitle className="text-base">Status journal</CardTitle>
         <CardDescription>
-          Newest first (spec/reeve/05-health-journal.md §7.3).
+          Newest first.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -370,8 +369,7 @@ function DeviceDetailPage() {
                 <CardTitle className="text-base">Remote terminal</CardTitle>
                 <CardDescription>
                   Disabled by default; enabled only via desired state (a tree
-                  revision). Sessions are short-lived and audited
-                  (spec/reeve/03-terminal.md §5).
+                  revision). Sessions are short-lived and audited.
                 </CardDescription>
               </CardHeader>
               <CardContent>

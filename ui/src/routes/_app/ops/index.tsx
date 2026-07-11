@@ -46,7 +46,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-/** Durability posture (spec/reeve/07-durability.md §9). */
+/** Durability posture: snapshot/changeset shipping and verified restore. */
 function DurabilityCard() {
   const refetchInterval = usePollInterval(30_000)
   const status = useDurabilityStatus({ query: { refetchInterval } })
@@ -71,8 +71,8 @@ function DurabilityCard() {
           )}
         </CardTitle>
         <CardDescription>
-          Snapshot + changeset shipping and verify-restore (§9). An unverified
-          tier reads as none.
+          Snapshot and changeset shipping with verified restore. A tier whose
+          restore has never been verified reads as none.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -84,7 +84,7 @@ function DurabilityCard() {
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <Field label="Configured tier">{d.tier}</Field>
             <Field label="Effective tier">{d.effective_tier}</Field>
-            <Field label="Server epoch (§9.5 fencing)">
+            <Field label="Server epoch">
               <span className="font-mono">{d.epoch}</span>
             </Field>
             <Field label="Generation">
@@ -115,7 +115,7 @@ function DurabilityCard() {
   )
 }
 
-/** Federation posture (spec/reeve/06-federation.md §8.2). */
+/** Federation posture for this tier. */
 function FederationCard() {
   const refetchInterval = usePollInterval(30_000)
   const status = useFederationStatus({ query: { refetchInterval } })
@@ -132,7 +132,7 @@ function FederationCard() {
           )}
         </CardTitle>
         <CardDescription>
-          This tier's federation state (§8.2 — queryable and evented).
+          This tier's federation state.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -204,7 +204,7 @@ function CapabilitiesCard() {
   )
 }
 
-/** Tier tokens (spec/reeve/06-federation.md §8.4) — admin only. */
+/** Tier tokens — admin only. */
 function TierTokensCard() {
   const qc = useQueryClient()
   const refetchInterval = usePollInterval(30_000)
@@ -226,8 +226,8 @@ function TierTokensCard() {
           </Button>
         </CardTitle>
         <CardDescription>
-          Child-tier sync credentials (§8.4). Raw tokens are shown once at
-          creation; revocation is the lever.
+          Child-tier sync credentials. Raw tokens are shown once at
+          creation; revoke to disable one.
         </CardDescription>
       </CardHeader>
       <CardContent>

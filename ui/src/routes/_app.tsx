@@ -25,7 +25,7 @@ function AppLayout() {
   const queryClient = useQueryClient()
 
   // One live event stream for the whole authed app; SSE events map to
-  // Query invalidations (src/lib/sse.ts, spec/reeve/04-status-stream.md §6).
+  // Query invalidations (see src/lib/sse.ts).
   useEffect(() => startSse(queryClient), [queryClient])
 
   return (

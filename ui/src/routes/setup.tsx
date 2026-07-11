@@ -18,9 +18,8 @@ export const Route = createFileRoute('/setup')({
 })
 
 /**
- * First-boot admin creation (docs/decisions/auth.md D1): valid only
- * while zero users exist, with the one-time setup token logged at
- * server startup.
+ * First-boot admin creation: valid only while zero users exist, with the
+ * one-time setup token logged at server startup.
  */
 function SetupPage() {
   const [setupToken, setSetupToken] = useState('')

@@ -1,0 +1,72 @@
+# compose.dev.yml — local dev/demo fleet: one server + N virtual devices.
+#
+# NOT for production (that's the root compose.yml). This stands up a
+# password-auth server and a scalable pool of reeve-agent containers,
+# each of which enrolls itself as a separate "device" and holds a
+# remote-terminal-enabled config so you can open a shell into it from
+# the UI.
+#
+# Don't run this by hand — use `./scripts/dev-up.sh [N]`, which boots
+# the server, creates the admin, enables the terminal fleet-wide, mints
+# a join token, and starts N devices. `./scripts/dev-down.sh` tears it
+# all down (volumes included).
+
+name: reeve-dev
+
+services:
+  reeve-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: reeve-server:dev
+    ports:
+      - "8420:8420"
+    environment:
+      - REEVE_LISTEN=0.0.0.0:8420
+      - REEVE_DATA_DIR=/data
+      # password mode: the remote terminal only enables under
+      # password/proxy auth (every session is audited with a username).
+      - REEVE_AUTH=password
+      - REEVE_DURABILITY=none
+    volumes:
+      - server-data:/data
+    healthcheck:
+      test: ["CMD", "/reeve-server", "healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A virtual device. Scale it: `docker compose -f compose.dev.yml up -d
+  # --scale device=5 device`. Each replica gets its own anonymous data
+  # volume (the Dockerfile VOLUME), a unique hostname, and so enrolls as
+  # a distinct device. The entrypoint enrolls once (idempotent) then
+  # runs the normal converge loop.
+  device:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    image: reeve-agent:dev
+    depends_on:
+      reeve-server:
+        condition: service_healthy
+    environment:
+      - REEVE_SERVER=http://reeve-server:8420
+      - REEVE_AGENT_CONFIG=/var/lib/reeve-agent/agent.toml
+      # supplied by scripts/dev-up.sh after it mints the join token
+      - JOIN_TOKEN=${JOIN_TOKEN:?set by scripts/dev-up.sh — do not run this compose file directly}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -f "$$REEVE_AGENT_CONFIG" ]; then
+          echo "enrolling this device against $$REEVE_SERVER..."
+          reeve-agent enroll \
+            --server "$$REEVE_SERVER" \
+            --token "$$JOIN_TOKEN" \
+            --config "$$REEVE_AGENT_CONFIG" \
+            --data-dir /var/lib/reeve-agent
+        fi
+        exec reeve-agent
+
+volumes:
+  server-data:

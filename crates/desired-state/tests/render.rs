@@ -663,3 +663,59 @@ fn unexpected_app_tree_path_is_an_error() {
         "{err}"
     );
 }
+
+// ------------------------------------------------ bundle-level config/
+
+/// A layer can author bundle-level config under `config/**`; it renders
+/// verbatim into the bundle root. This is how the remote terminal is
+/// enabled: `config/terminal.yaml` with `enabled: true` reaches the
+/// agent (and the server re-checks it from its own render).
+#[test]
+fn layer_config_renders_into_bundle_root() {
+    let mut t = base_tree();
+    t.insert(
+        "layers/00-fleet/config/terminal.yaml".into(),
+        b"enabled: true\nidleTimeoutSecs: 300\n".to_vec(),
+    );
+    let out = render(&t, &ctx("dev-1", &["00-fleet"])).unwrap();
+    assert_eq!(utf8(&out, "config/terminal.yaml"), "enabled: true\nidleTimeoutSecs: 300\n");
+}
+
+/// Whole-file replace across the chain: a deeper layer's config file
+/// wins outright over a shallower one (a file is a scalar, not merged).
+#[test]
+fn deeper_layer_config_replaces_shallower() {
+    let mut t = base_tree();
+    t.insert(
+        "layers/00-fleet/config/terminal.yaml".into(),
+        b"enabled: false\n".to_vec(),
+    );
+    t.insert(
+        "layers/30-device.dev-1/config/terminal.yaml".into(),
+        b"enabled: true\n".to_vec(),
+    );
+    let out = render(&t, &ctx("dev-1", &["00-fleet", "30-device.dev-1"])).unwrap();
+    assert_eq!(utf8(&out, "config/terminal.yaml"), "enabled: true\n");
+}
+
+/// A layer that authors no config yields no config/ entries — the
+/// feature is inert until used.
+#[test]
+fn no_config_means_no_config_entries() {
+    let out = render(&base_tree(), &ctx("dev-1", &["00-fleet"])).unwrap();
+    assert!(out.keys().all(|k| !k.starts_with("config/")));
+}
+
+/// Config is bundle content like everything else: identical inputs
+/// render byte-identically (the D3 determinism line holds with config).
+#[test]
+fn config_render_is_byte_identical() {
+    let mut t = base_tree();
+    t.insert(
+        "layers/00-fleet/config/terminal.yaml".into(),
+        b"enabled: true\n".to_vec(),
+    );
+    let a = render(&t, &ctx("dev-1", &["00-fleet"])).unwrap();
+    let b = render(&t, &ctx("dev-1", &["00-fleet"])).unwrap();
+    assert_eq!(a, b);
+}

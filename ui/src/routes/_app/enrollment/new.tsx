@@ -33,8 +33,8 @@ export const Route = createFileRoute('/_app/enrollment/new')({
 })
 
 /**
- * Mint a join token (D4). The raw token appears exactly once below —
- * only its hash is stored server-side.
+ * Mint a join token. The raw token appears exactly once below — only its
+ * hash is stored server-side.
  */
 function JoinTokenCreatePage() {
   const qc = useQueryClient()
@@ -117,7 +117,7 @@ function JoinTokenCreatePage() {
           <CardHeader>
             <CardTitle className="text-base">Token parameters</CardTitle>
             <CardDescription>
-              Defaults are D4's: 24 h TTL, single use, no device binding.
+              Defaults: 24 h TTL, single use, no device binding.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">

@@ -24,9 +24,8 @@ export const Route = createFileRoute('/_app/secrets/')({
 })
 
 /**
- * Secrets metadata (spec/reeve/10-secrets.md §12.2 write-only): name,
- * scope, version, timestamps. Values are NEVER readable — rotate goes
- * through the same write-only form.
+ * Secrets metadata: name, scope, version, timestamps. Values are never
+ * readable — rotate goes through the same write-only form.
  */
 function SecretsPage() {
   const qc = useQueryClient()

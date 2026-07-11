@@ -24,15 +24,13 @@ function splitScope(scope: string | undefined): { kind: ScopeKind; qualifier: st
 }
 
 /**
- * Set/rotate a secret — the ONE write surface (§12.2 write-only: the
- * value is plaintext in this form's memory and the request body only;
- * it is never readable back, so this component never displays stored
- * values). Setting an existing (scope, name) IS rotation: version
- * bumps and secrets_version propagation re-ups exactly the consuming
- * services.
+ * Set/rotate a secret — the ONE write surface. Secrets are write-only:
+ * the value lives in this form's memory and the request body only, and
+ * is never readable back, so this component never displays stored
+ * values. Setting an existing (scope, name) IS rotation: the version
+ * bumps and propagation re-ups exactly the consuming services.
  *
- * Scope grammar (spec/reeve/10-secrets.md):
- * `fleet | class.<n> | region.<n> | site.<n> | device.<id>`.
+ * Scope: `fleet | class.<n> | region.<n> | site.<n> | device.<id>`.
  */
 export function SecretForm({
   initialName = '',

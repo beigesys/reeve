@@ -29,10 +29,9 @@ interface PickedFile {
 const NAME_RE = /^[a-z0-9][a-z0-9.-]*$/
 
 /**
- * Vendor a Margo application package: pick a package directory, PUT
- * its files to /api/tree/packages/{name}/{version} (one declarative
- * commit; the server validates the package with crates/margo-package
- * and returns warnings).
+ * Vendor an application package: pick a package directory, PUT its files
+ * to /api/tree/packages/{name}/{version} (one declarative commit; the
+ * server validates the package and returns warnings).
  */
 function PackageUploadPage() {
   const navigate = useNavigate()

@@ -1,7 +1,6 @@
 // Tree-view helpers built ONLY on the generated client (fetchers +
-// query-key factories from ui/src/api — D10; no hand-written API
-// types). The revision-content layout is D11: `layers/**` +
-// `packages/**`.
+// query-key factories from ui/src/api; no hand-written API types).
+// Revision content is laid out as `layers/**` + `packages/**`.
 import { useQuery } from '@tanstack/react-query'
 import {
   fileAt,

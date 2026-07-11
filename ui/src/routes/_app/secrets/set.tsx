@@ -23,7 +23,7 @@ export const Route = createFileRoute('/_app/secrets/set')({
   component: SecretSetPage,
 })
 
-/** New and rotate share this page — same PUT, same form (D14-style). */
+/** New and rotate share this page — same PUT, same form. */
 function SecretSetPage() {
   const { name, scope } = Route.useSearch()
   const rotating = !!name
@@ -48,9 +48,8 @@ function SecretSetPage() {
             {rotating ? 'New value' : 'New secret'}
           </CardTitle>
           <CardDescription>
-            Writing an existing (scope, name) rotates it: the version bumps
-            and exactly the consuming services re-up
-            (spec/reeve/10-secrets.md §12).
+            Writing an existing scope and name rotates it: the version bumps
+            and exactly the consuming services re-up.
           </CardDescription>
         </CardHeader>
         <CardContent>

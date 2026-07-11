@@ -16,10 +16,7 @@ export const Route = createFileRoute('/_app/packages/')({
   component: PackagesPage,
 })
 
-/**
- * App catalog: vendored Margo application packages at head
- * (`packages/<name>/<version>/**`, docs/decisions/tree-render.md D11).
- */
+/** App catalog: vendored application packages at head. */
 function PackagesPage() {
   const { files, streamOf, isLoading } = useHeadFiles()
   const packages = files ? [...groupPackages(files).values()] : []

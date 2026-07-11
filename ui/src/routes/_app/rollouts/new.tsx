@@ -33,11 +33,10 @@ export const Route = createFileRoute('/_app/rollouts/new')({
 })
 
 /**
- * Create a rollout (spec/reeve/09-rollouts.md §11.1): pick the target
- * local revision, build the cohort (explicit devices, layer subtrees,
- * labels — selectors union; D12: labels group, never configure), and
- * set wave/gate parameters. Everything but revision+cohort is optional
- * with server defaults.
+ * Create a rollout: pick the target local revision, build the cohort
+ * (explicit devices, layer subtrees, and labels — the selectors are
+ * unioned), and set wave/gate parameters. Everything but revision and
+ * cohort is optional and falls back to server defaults.
  */
 function RolloutCreatePage() {
   const navigate = useNavigate()
@@ -172,8 +171,8 @@ function RolloutCreatePage() {
           <CardHeader>
             <CardTitle className="text-base">Cohort</CardTitle>
             <CardDescription>
-              Selectors union. Explicit devices, layer subtrees (D11 layer
-              names), and label matches (all pairs must match).
+              Selectors are unioned: explicit devices, layer subtrees, and
+              label matches (all pairs must match).
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
@@ -307,8 +306,8 @@ function RolloutCreatePage() {
           <CardHeader>
             <CardTitle className="text-base">Waves &amp; gate</CardTitle>
             <CardDescription>
-              Blank fields use server defaults (§11.2/§11.3). No wave count =
-              one wave covering the whole cohort.
+              Blank fields use server defaults. No wave count means one wave
+              covering the whole cohort.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-3">

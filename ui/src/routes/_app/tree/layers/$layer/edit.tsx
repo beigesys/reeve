@@ -33,9 +33,9 @@ interface StagedFile {
 }
 
 /**
- * Staged working set for one layer. The PUT is batch-declarative
- * (docs/decisions/tree-render.md D14): the request replaces the WHOLE
- * layer, so deleting a file here really deletes it on apply.
+ * Staged working set for one layer. The PUT is batch-declarative: the
+ * request replaces the WHOLE layer, so deleting a file here really
+ * deletes it on apply.
  */
 function LayerEditPage() {
   const { layer } = Route.useParams()

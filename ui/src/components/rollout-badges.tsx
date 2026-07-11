@@ -8,7 +8,7 @@ const ROLLOUT_STATE: Record<string, string> = {
   completed: 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400',
 }
 
-/** Rollout lifecycle badge (spec/reeve/09-rollouts.md §11.6). */
+/** Rollout lifecycle badge. */
 export function RolloutStateBadge({ state }: { state: string }) {
   return (
     <Badge variant="outline" className={cn('font-normal', ROLLOUT_STATE[state])}>
@@ -42,7 +42,7 @@ const DEVICE_CLASS: Record<string, string> = {
   failed: 'border-red-500/40 text-red-600 dark:text-red-400',
 }
 
-/** §11.6 per-device rollout classification badge. */
+/** Per-device rollout classification badge. */
 export function DeviceClassBadge({ state }: { state: string }) {
   return (
     <Badge variant="outline" className={cn('font-normal', DEVICE_CLASS[state])}>

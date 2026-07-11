@@ -25,8 +25,8 @@ export const Route = createFileRoute('/_app/ops/tier-tokens/new')({
 })
 
 /**
- * Mint a child-tier sync token (spec/reeve/06-federation.md §8.4,
- * admin only — the server enforces the role). Raw token shown once.
+ * Mint a child-tier sync token (admin only — the server enforces the
+ * role). Raw token shown once.
  */
 function TierTokenCreatePage() {
   const qc = useQueryClient()
@@ -136,7 +136,7 @@ function TierTokenCreatePage() {
                   className="font-mono"
                 />
                 <span className="text-xs text-muted-foreground">
-                  The layer family the child owns (§8.4).
+                  The layer family the child owns.
                 </span>
               </div>
             </div>

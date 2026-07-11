@@ -8,7 +8,7 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { useSseConnected } from '@/lib/sse'
 
-/** SSE freshness dot (§6.2: connect/disconnect is invisible beyond this). */
+/** SSE freshness dot; connect/disconnect is invisible beyond this. */
 function StreamIndicator() {
   const up = useSseConnected()
   return (

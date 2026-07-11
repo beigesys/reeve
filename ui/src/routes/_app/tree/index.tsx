@@ -26,7 +26,7 @@ export const Route = createFileRoute('/_app/tree/')({
   component: TreePage,
 })
 
-/** D11 layer-dir grammar; numeric prefix orders precedence. */
+/** Layer directory name; the numeric prefix sets precedence order. */
 const LAYER_NAME = /^\d{2}-[a-z0-9][a-z0-9.-]*$/
 
 function TreePage() {
@@ -53,8 +53,8 @@ function TreePage() {
         <CardHeader>
           <CardTitle className="text-base">Head</CardTitle>
           <CardDescription>
-            The tree the next render sees: upstream stream overlaid by local
-            authoring (docs/decisions/delivery.md D13).
+            The tree the next render sees: configuration synced from upstream,
+            with this tier's own edits layered on top.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -94,10 +94,11 @@ function TreePage() {
         <CardHeader>
           <CardTitle className="text-base">Layers</CardTitle>
           <CardDescription>
-            Overlay layers at head, grouped by <code>layers/NN-*</code> (D11
-            grammar: <code>00-fleet</code>, <code>05-class.&lt;n&gt;</code>,{' '}
-            <code>10-region.&lt;n&gt;</code>, <code>20-site.&lt;n&gt;</code>,{' '}
-            <code>30-device.&lt;id&gt;</code>).
+            Configuration layers at head, applied from fleet-wide down to a
+            single device — the more specific layer wins. Layers range from{' '}
+            <code>fleet</code> and <code>class</code> through{' '}
+            <code>region</code>, <code>site</code>, and individual{' '}
+            <code>device</code>.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -192,7 +193,7 @@ function TreePage() {
             </Button>
             {newLayer && !newLayerValid && (
               <span className="text-xs text-muted-foreground">
-                Must match NN-name (D11 grammar).
+                Use a name like 20-site.plant-a.
               </span>
             )}
           </form>
