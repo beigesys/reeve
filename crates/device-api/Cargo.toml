@@ -5,8 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-reeve-types = { path = "../reeve-types" }
+# openapi: this crate's routes are part of the served contract — their
+# #[utoipa::path] annotations feed reeve-server's openapi.json (D10).
+reeve-types = { path = "../reeve-types", features = ["openapi"] }
 axum = { workspace = true }
+utoipa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

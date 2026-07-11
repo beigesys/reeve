@@ -45,6 +45,14 @@ pub fn build(state: AppState) -> Router {
         .route("/api/tree/revisions/{id}/files/{*path}", get(tree::file_at))
         .route("/api/tree/diff/{a}/{b}", get(tree::diff))
         .route("/api/tree/blame/{*path}", get(tree::blame))
+        // Device fleet reads (Track D): list, detail (render
+        // provenance), journal page; viewer+, enforced in the handlers.
+        .route("/api/devices", get(crate::devices::list))
+        .route("/api/devices/{device_id}", get(crate::devices::detail))
+        .route(
+            "/api/devices/{device_id}/journal",
+            get(crate::devices::journal),
+        )
         // Manual render kick (C4): re-render all devices at the current
         // head; operator+, enforced in the handler.
         .route("/api/render", post(render_kick))
@@ -54,7 +62,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/api/durability/status",
             get(crate::durability::status_route),
-        );
+        )
+        // Server version + capability advertisement, human leg
+        // (viewer+): the ops UI card. Same body as the device-auth'd
+        // /api/reeve/v1/capabilities.
+        .route("/api/server", get(server_info));
     // Secrets operator surface (C7, spec/reeve/10-secrets.md §12.2):
     // write-only — set/rotate (PUT, operator+), delete (operator+),
     // metadata list (viewer+). No value read-back route exists.
@@ -257,13 +269,81 @@ pub fn build(state: AppState) -> Router {
         .fallback(crate::assets::spa_fallback)
 }
 
-async fn healthz() -> Json<serde_json::Value> {
+/// GET /healthz — liveness (operational contract, CLAUDE.md). No auth.
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "ops",
+    responses((status = 200, description = "Server is up", body = HealthzResponse)),
+)]
+pub(crate) async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
+}
+
+/// `GET /healthz` body.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct HealthzResponse {
+    /// Always `ok`.
+    pub status: String,
+}
+
+/// GET /api/server — server version + compiled-in extension
+/// advertisement for the ops UI. Human (session) leg of the
+/// device-auth'd /api/reeve/v1/capabilities; viewer+.
+#[utoipa::path(
+    get,
+    path = "/api/server",
+    operation_id = "server_info",
+    tag = "ops",
+    responses(
+        (status = 200, description = "Server version + advertised extensions", body = reeve_types::reeve::capabilities::ServerCapabilities),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
+pub(crate) async fn server_info(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    identity: device_api::Identity,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    if let Err(status) =
+        crate::join_tokens::require_at_least(&state, &identity, device_api::Role::Viewer)
+    {
+        return status.into_response();
+    }
+    Json(delivery::server_capabilities()).into_response()
+}
+
+/// One failed device in a [`RenderKickResponse`].
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RenderFailure {
+    pub device: String,
+    pub error: String,
+}
+
+/// `POST /api/render` body: the render pass report.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RenderKickResponse {
+    /// Devices whose manifest changed (and was bumped).
+    pub rendered: usize,
+    /// Devices already current (no bump — D3).
+    pub unchanged: usize,
+    pub failed: Vec<RenderFailure>,
 }
 
 /// POST /api/render — operator+ manual kick: re-render every device at
 /// the current local head (C4). No-change devices are not bumped (D3).
-async fn render_kick(
+#[utoipa::path(
+    post,
+    path = "/api/render",
+    tag = "tree",
+    responses(
+        (status = 200, description = "Render pass report", body = RenderKickResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+    ),
+)]
+pub(crate) async fn render_kick(
     axum::extract::State(state): axum::extract::State<AppState>,
     identity: device_api::Identity,
 ) -> axum::response::Response {

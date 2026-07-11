@@ -76,7 +76,7 @@ pub const ENGINE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 /// (layer subtrees), and/or label matches (D12: labels select COHORTS
 /// and filter UIs only — they never select or inject configuration).
 /// Selectors union; the resolved cohort is recorded at creation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CohortSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -92,7 +92,7 @@ pub struct CohortSpec {
 }
 
 /// Gate policy overrides (§11.3); defaults above.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GateSpec {
     pub soak_secs: Option<i64>,
@@ -107,7 +107,7 @@ pub struct GateSpec {
 /// POST /api/rollouts body. Waves: exactly one of `waves` (explicit
 /// partition), `strategy` (e.g. `["1", "10%", "rest"]`), `waveCount`,
 /// or none (single wave = whole cohort).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateRequest {
     /// The source tree revision (§11.1) — an existing local revision.
@@ -369,18 +369,18 @@ fn load_rollout(conn: &Connection, rollout_id: &str) -> rusqlite::Result<Option<
 
 /// §11.6 per-device rollout view: advanced / converged / healthy /
 /// undetermined / failed. `Pending` = not yet advanced by its wave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
-enum DeviceClass {
+pub enum DeviceClass {
     Pending,
     Converged,
     Failed,
     Undetermined,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-struct DeviceStatus {
+pub struct DeviceStatus {
     device_id: String,
     advanced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -392,9 +392,9 @@ struct DeviceStatus {
     status: DeviceClass,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-struct WaveCounts {
+pub struct WaveCounts {
     total: i64,
     converged: i64,
     failed: i64,
@@ -992,6 +992,19 @@ fn new_rollout_id() -> String {
 /// strictly monotonic throughout (§11.5 note — content may revert,
 /// versions never do). Create the rollout promptly after the commit
 /// and no device ever sees the staged content early.
+#[utoipa::path(
+    post,
+    path = "/api/rollouts",
+    tag = "rollouts",
+    request_body = CreateRequest,
+    responses(
+        (status = 201, description = "Rollout created and started", body = CreateRolloutResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 409, description = "Conflicting active rollout", body = device_api::ErrorBody),
+        (status = 422, description = "Invalid revision, cohort, waves, or gate", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn create_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -1190,7 +1203,120 @@ pub async fn create_route(
         .into_response()
 }
 
+/// `POST /api/rollouts` 201 body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRolloutResponse {
+    pub rollout_id: String,
+    pub revision: i64,
+    /// Always `active` at creation.
+    pub state: String,
+    /// Resolved cohort device ids.
+    pub cohort: Vec<String>,
+    /// The wave partition (device ids per wave).
+    pub waves: Vec<Vec<String>>,
+}
+
+/// One `GET /api/rollouts` entry.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutSummary {
+    pub rollout_id: String,
+    pub revision: i64,
+    /// `active` | `paused` | `aborted` | `completed`.
+    pub state: String,
+    pub current_wave: i64,
+    pub pause_reason: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub wave_count: i64,
+    pub device_count: i64,
+}
+
+/// One wave in a [`RolloutDetail`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveStatus {
+    pub index: i64,
+    /// `pending` | `advancing` | `soaking` | `passed` | `failed`.
+    pub state: String,
+    pub soak_started_at: Option<i64>,
+    pub gated_at: Option<i64>,
+    /// Recorded gate evaluation (free-form; §11.3).
+    #[schema(value_type = Object)]
+    pub gate: Option<serde_json::Value>,
+    pub counts: WaveCounts,
+    pub devices: Vec<DeviceStatus>,
+}
+
+/// Effective gate policy in a [`RolloutDetail`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GatePolicy {
+    pub soak_secs: i64,
+    pub gate_timeout_secs: i64,
+    pub pass_fraction: f64,
+    pub undetermined_allowance: Option<i64>,
+}
+
+/// One audit transition in a [`RolloutDetail`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionEntry {
+    pub seq: i64,
+    pub ts: i64,
+    pub action: String,
+    pub author: String,
+    pub detail: Option<String>,
+}
+
+/// `GET /api/rollouts/{rollout_id}` body (§11.6 full status).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutDetail {
+    pub rollout_id: String,
+    pub revision: i64,
+    pub state: String,
+    pub current_wave: i64,
+    /// The cohort spec as recorded at creation.
+    #[schema(value_type = Object)]
+    pub cohort: serde_json::Value,
+    pub gate: GatePolicy,
+    pub failure_threshold: i64,
+    pub pause_reason: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// §11.1 MUST: devices whose render the rollout does not change.
+    pub pinned_unaffected: i64,
+    pub waves: Vec<WaveStatus>,
+    pub transitions: Vec<TransitionEntry>,
+}
+
+/// `POST /api/rollouts/{id}/pause|resume|abort` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutTransitioned {
+    pub rollout_id: String,
+    /// `paused` | `resumed` | `aborted`.
+    pub action: String,
+}
+
 /// GET /api/rollouts (viewer+) — newest first.
+#[utoipa::path(
+    get,
+    path = "/api/rollouts",
+    // Explicit id: `list_route` fn names collide with secrets;
+    // operationIds must be globally unique (D10).
+    operation_id = "list_rollouts",
+    tag = "rollouts",
+    responses(
+        (status = 200, description = "All rollouts, newest first", body = Vec<RolloutSummary>),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn list_route(State(state): State<AppState>, identity: Identity) -> Response {
     if let Err(status) = require_at_least(&state, &identity, Role::Viewer) {
         return status.into_response();
@@ -1230,6 +1356,21 @@ pub async fn list_route(State(state): State<AppState>, identity: Identity) -> Re
 /// per-device classification (§11.6: advanced / converged /
 /// undetermined / failed), the pinned/unaffected count (§11.1 MUST),
 /// recorded gate results, and the transition history.
+#[utoipa::path(
+    get,
+    path = "/api/rollouts/{rollout_id}",
+    // Explicit id: `status_route` fn names collide across durability /
+    // federation / rollouts; operationIds must be globally unique (D10).
+    operation_id = "rollout_status",
+    tag = "rollouts",
+    params(("rollout_id" = String, Path, description = "Rollout id")),
+    responses(
+        (status = 200, description = "Full rollout status (§11.6)", body = RolloutDetail),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+        (status = 404, description = "Unknown rollout", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn status_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -1430,6 +1571,19 @@ async fn transition_route(
 }
 
 /// POST /api/rollouts/{id}/pause (operator+).
+#[utoipa::path(
+    post,
+    path = "/api/rollouts/{rollout_id}/pause",
+    tag = "rollouts",
+    params(("rollout_id" = String, Path, description = "Rollout id")),
+    responses(
+        (status = 200, description = "Paused", body = RolloutTransitioned),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown rollout", body = device_api::ErrorBody),
+        (status = 409, description = "Not pausable from its current state", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn pause_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -1439,6 +1593,19 @@ pub async fn pause_route(
 }
 
 /// POST /api/rollouts/{id}/resume (operator+).
+#[utoipa::path(
+    post,
+    path = "/api/rollouts/{rollout_id}/resume",
+    tag = "rollouts",
+    params(("rollout_id" = String, Path, description = "Rollout id")),
+    responses(
+        (status = 200, description = "Resumed (a failed gate re-soaks)", body = RolloutTransitioned),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown rollout", body = device_api::ErrorBody),
+        (status = 409, description = "Not resumable from its current state", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn resume_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -1448,6 +1615,19 @@ pub async fn resume_route(
 }
 
 /// POST /api/rollouts/{id}/abort (operator+).
+#[utoipa::path(
+    post,
+    path = "/api/rollouts/{rollout_id}/abort",
+    tag = "rollouts",
+    params(("rollout_id" = String, Path, description = "Rollout id")),
+    responses(
+        (status = 200, description = "Aborted (pausing permanently — records and holds retained, §11.2)", body = RolloutTransitioned),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown rollout", body = device_api::ErrorBody),
+        (status = 409, description = "Already terminal", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn abort_route(
     State(state): State<AppState>,
     identity: Identity,

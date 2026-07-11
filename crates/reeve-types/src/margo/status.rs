@@ -26,6 +26,7 @@ pub const DEPLOYMENT_STATUS_KIND: &str = "DeploymentStatusManifest";
 /// (`workload-management-api-1.0.0.yaml` `DeploymentStatusManifest.
 /// status.state` enum; `deployment-status.md` "Status Attributes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum DeploymentState {
     Pending,
@@ -69,6 +70,7 @@ impl DeploymentState {
 /// (`deployment-status.md` "Request Body Attributes"; posted to
 /// `POST /api/v1/clients/{clientId}/deployments/{deploymentId}/status`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentStatusManifest {
     pub api_version: String,
@@ -95,6 +97,7 @@ pub struct DeploymentStatusManifest {
 /// schema — the attribute table's `[]status` type is contradicted by
 /// both and is read as a spec typo).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentStatus {
     pub state: DeploymentState,
@@ -107,6 +110,7 @@ pub struct DeploymentStatus {
 /// `workload-management-api-1.0.0.yaml`). MUST contain one entry per
 /// component of the referenced `ApplicationDeployment`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentStatus {
     pub name: String,
@@ -119,6 +123,7 @@ pub struct ComponentStatus {
 /// Reserved gateway-generated codes: 101 unknown child device, 102
 /// child device unreachable, 103 autonomous placement not supported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct StatusError {
     #[serde(default, skip_serializing_if = "Option::is_none")]

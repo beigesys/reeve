@@ -42,13 +42,13 @@ fn clear_cookie_header() -> (header::HeaderName, String) {
     )
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionInfo {
     pub user: String,
     pub role: Role,
@@ -56,6 +56,17 @@ pub struct SessionInfo {
 
 /// POST /api/auth/login (password mode only — 404 elsewhere: the surface
 /// does not exist under proxy/none).
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Logged in; session cookie set", body = SessionInfo),
+        (status = 401, description = "Bad credentials"),
+        (status = 404, description = "Not in password auth mode"),
+    ),
+)]
 pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> Response {
     if !matches!(state.cfg.auth, AuthMode::Password) {
         return StatusCode::NOT_FOUND.into_response();
@@ -84,6 +95,12 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>
 
 /// POST /api/auth/logout — deletes the session, clears the cookie.
 /// Idempotent: no session is still a 204.
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    tag = "auth",
+    responses((status = 204, description = "Session deleted, cookie cleared (idempotent)")),
+)]
 pub async fn logout(State(state): State<AppState>, req: Request) -> Response {
     if let Some(raw) = super::session_cookie(&req) {
         let conn = state.db.lock().expect("db mutex poisoned");
@@ -94,7 +111,7 @@ pub async fn logout(State(state): State<AppState>, req: Request) -> Response {
     (StatusCode::NO_CONTENT, [clear_cookie_header()]).into_response()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SetupRequest {
     pub setup_token: String,
     pub username: String,
@@ -104,6 +121,19 @@ pub struct SetupRequest {
 /// POST /api/auth/setup — first-boot admin creation (D1): valid only while
 /// zero users exist and only with the one-time token logged at startup.
 /// Creates the admin and logs them in.
+#[utoipa::path(
+    post,
+    path = "/api/auth/setup",
+    tag = "auth",
+    request_body = SetupRequest,
+    responses(
+        (status = 201, description = "Admin created and logged in", body = SessionInfo),
+        (status = 401, description = "Wrong setup token"),
+        (status = 404, description = "Not in password auth mode"),
+        (status = 409, description = "Setup window closed (users already exist)"),
+        (status = 422, description = "Empty username or password"),
+    ),
+)]
 pub async fn setup(State(state): State<AppState>, Json(body): Json<SetupRequest>) -> Response {
     if !matches!(state.cfg.auth, AuthMode::Password) {
         return StatusCode::NOT_FOUND.into_response();
@@ -153,8 +183,33 @@ pub async fn setup(State(state): State<AppState>, Json(body): Json<SetupRequest>
         .into_response()
 }
 
+/// `GET /api/auth/me` body. `kind` decides which identity fields are
+/// present: `human` carries `user`+`role`, `device` carries
+/// `deviceId`, `anonymous` carries neither.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WhoAmI {
+    /// `human` | `device` | `anonymous`.
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// The role this identity ACTS with (mode-aware: REEVE_AUTH=none
+    /// maps anonymous to admin); `null` = no access.
+    pub effective_role: Option<Role>,
+}
+
 /// GET /api/auth/me — who am I, and what role am I acting with
 /// (mode-aware: REEVE_AUTH=none reports anonymous acting as admin).
+#[utoipa::path(
+    get,
+    path = "/api/auth/me",
+    tag = "auth",
+    responses((status = 200, description = "Current identity and effective role", body = WhoAmI)),
+)]
 pub async fn me(State(state): State<AppState>, identity: Identity) -> Response {
     let effective = state.effective_role(&identity);
     let body = match &identity {

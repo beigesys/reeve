@@ -15,6 +15,12 @@ gen-api:
     cargo run -p reeve-server -- openapi > ui/openapi.json
     cd ui && npm run gen-api
 
+# CI drift gate (D10): regenerate, then fail if the committed
+# openapi.json or generated client differs — the Rust annotations are
+# the source of truth, ui/src/api/ is never hand-edited.
+check-api-drift: gen-api
+    git diff --exit-code ui/openapi.json ui/src/api
+
 # Conformance: core loop with all extensions compiled out (E2)
 conformance:
     cargo build -p reeve-agent --no-default-features

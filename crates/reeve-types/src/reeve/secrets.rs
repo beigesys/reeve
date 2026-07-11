@@ -24,6 +24,7 @@ pub const SECRETS_RESOLVE_PATH: &str = "/api/reeve/v1/secrets/resolve";
 /// values; names are metadata (spec/reeve/10-secrets.md §12.6
 /// "who resolved what version when — metadata, not values").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsResolveRequest {
     pub secrets: Vec<String>,
@@ -33,6 +34,7 @@ pub struct SecretsResolveRequest {
 /// counter that feeds the manifest-level `secrets_version` hash,
 /// spec/reeve/10-secrets.md §12.4).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedSecret {
     /// Plaintext. RAM/TLS/env-file only (§12.3); never log.
@@ -57,6 +59,7 @@ impl std::fmt::Debug for ResolvedSecret {
 /// (indistinguishable by design: the resolve endpoint must not be a
 /// secret-existence oracle beyond the device's own scope, §12.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsResolveResponse {
     pub secrets: BTreeMap<String, ResolvedSecret>,

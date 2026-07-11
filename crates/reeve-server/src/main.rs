@@ -85,6 +85,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Some("init") => return init_cmd(&args[1..]),
         Some("healthz") => return healthz_cmd(),
+        Some("openapi") => {
+            // D10 pipeline (docs/decisions/ui.md): print THIS binary's
+            // API document — deterministic bytes; `just gen-api` writes
+            // them to ui/openapi.json for orval + the C12 embed.
+            print!("{}", reeve_server::openapi::json());
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -173,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
                 match arg.as_str() {
                     "--restore-from-target" => opts.restore_from_target = true,
                     other => anyhow::bail!(
-                        "unknown argument {other:?} (subcommands: init, healthz, \
+                        "unknown argument {other:?} (subcommands: init, healthz, openapi, \
                          verify-restore, export, export-status, import, tier-identity; \
                          flags: --version, --spec [name], --completions <shell>, \
                          --restore-from-target)"

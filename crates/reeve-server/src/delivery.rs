@@ -79,6 +79,15 @@ pub fn server_capabilities() -> ServerCapabilities {
 
 /// GET /api/reeve/v1/capabilities (device-auth'd; anonymous pull of
 /// anything device-facing is disabled by default, §10.2).
+#[utoipa::path(
+    get,
+    path = "/api/reeve/v1/capabilities",
+    tag = "device",
+    responses(
+        (status = 200, description = "Server extension advertisement (spec/reeve/01-framework.md §3.3)", body = ServerCapabilities),
+        (status = 401, description = "Unauthenticated"),
+    ),
+)]
 pub async fn capabilities() -> Json<ServerCapabilities> {
     Json(server_capabilities())
 }
@@ -123,6 +132,20 @@ pub fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
 /// (§10.2). Renders on demand when the device's row is behind the
 /// local head (fresh enrollment, missed pass), then serves the stored
 /// manifest bytes verbatim so the ETag is exact.
+#[utoipa::path(
+    get,
+    path = "/api/reeve/v1/manifest",
+    tag = "device",
+    params(
+        ("if-none-match" = Option<String>, Header, description = "RFC 9110 conditional GET against the manifest's strong ETag"),
+    ),
+    responses(
+        (status = 200, description = "The device's current State Manifest (ETag header set)", body = reeve_types::reeve::manifest::StateManifest),
+        (status = 304, description = "Not modified (If-None-Match matched)"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 404, description = "Enrolled but never rendered", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn manifest(
     State(state): State<AppState>,
     DeviceIdentity(device_id): DeviceIdentity,

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// and detect records it already holds. A vanilla WFM ignores the
 /// whole object (spec/reeve/01-framework.md §3.7 audit row REV-004).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ReeveStatusExtension {
     /// Original timestamp (RFC 3339) — assigned when journaled on
@@ -39,6 +40,7 @@ pub struct ReeveStatusExtension {
 /// receivers MUST ignore unknown sample fields" — unknown fields are
 /// captured (and re-emitted) via `extra`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct HealthSample {
     /// Per-filesystem usage, keyed by mount point / identifier.
@@ -71,6 +73,7 @@ pub struct HealthSample {
 /// sample's semantics, not its sub-shape); extensible like the rest
 /// of the sample.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DiskSample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +88,7 @@ pub struct DiskSample {
 
 /// Memory usage (spec/reeve/05-health-journal.md §7.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +105,7 @@ pub struct MemorySample {
 /// eviction of unacknowledged records — so the server can
 /// distinguish "evicted" from "never happened").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum JournalRecordKind {
     Status,
@@ -113,6 +118,7 @@ pub enum JournalRecordKind {
 /// (spec/reeve/05-health-journal.md §7.3 backfill path). Idempotency
 /// key is `(deviceId, seq)` — deviceId travels in the endpoint path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct JournalRecord {
     /// Monotonic per-device sequence number (§7.1).
@@ -131,6 +137,7 @@ pub struct JournalRecord {
 /// (spec/reeve/05-health-journal.md §7.3): unacknowledged records in
 /// batches ordered by sequence number.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct JournalBatch {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -141,6 +148,7 @@ pub struct JournalBatch {
 /// ingested sequence number; that acknowledgement is what permits
 /// journal eviction" (spec/reeve/05-health-journal.md §7.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct JournalAck {
     pub acked_seq: u64,
@@ -151,6 +159,7 @@ pub struct JournalAck {
 /// not yet backfilled) MUST be surfaced as unknown, never silently
 /// assumed healthy or dead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum HealthState {
     Healthy,
@@ -162,6 +171,7 @@ pub enum HealthState {
 /// `Device` — the device itself breaches thresholds; `Link` — the
 /// path was down but backfill shows the device was fine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum HealthKind {
     Device,

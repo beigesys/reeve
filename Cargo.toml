@@ -23,6 +23,10 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 rusqlite = { version = "0.40", features = ["bundled", "session"] }
+# D10 API type pipeline (docs/decisions/ui.md): axum routes annotated
+# with utoipa -> openapi.json -> orval-generated TS client + hooks.
+# The Rust types ARE the source of truth; ui/src/api/ is generated.
+utoipa = "5"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 # Durability tier target (spec/reeve/07-durability.md §9.2): one crate,

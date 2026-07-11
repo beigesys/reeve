@@ -1,0 +1,4583 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "reeve",
+    "description": "Fleet desired-state manager (Margo-inspired). Human API consumed by the reeve UI, plus the device-facing wire surface.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "POST /api/auth/login (password mode only — 404 elsewhere: the surface\ndoes not exist under proxy/none).",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in; session cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bad credentials"
+          },
+          "404": {
+            "description": "Not in password auth mode"
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "POST /api/auth/logout — deletes the session, clears the cookie.\nIdempotent: no session is still a 204.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Session deleted, cookie cleared (idempotent)"
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "GET /api/auth/me — who am I, and what role am I acting with\n(mode-aware: REEVE_AUTH=none reports anonymous acting as admin).",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "Current identity and effective role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoAmI"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/setup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "POST /api/auth/setup — first-boot admin creation (D1): valid only while\nzero users exist and only with the one-time token logged at startup.\nCreates the admin and logs them in.",
+        "operationId": "setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Admin created and logged in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong setup token"
+          },
+          "404": {
+            "description": "Not in password auth mode"
+          },
+          "409": {
+            "description": "Setup window closed (users already exist)"
+          },
+          "422": {
+            "description": "Empty username or password"
+          }
+        }
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "GET /api/devices (viewer+) — the fleet, ordered by device id.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "All enrolled devices with presence, labels, layer-chain membership and current deployment states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/devices/{device_id}": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "GET /api/devices/{device_id} (viewer+) — one device, with render\nprovenance.",
+        "operationId": "detail",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device detail: summary plus render provenance (revision ids, manifest version, per-app secrets_version)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/devices/{device_id}/journal": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "GET /api/devices/{device_id}/journal (viewer+) — status journal\npage, newest first (§7.3 forensic record; late-backfilled records\nappear in seq order, not arrival order).",
+        "operationId": "journal",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; default 100, max 1000",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before_seq",
+            "in": "query",
+            "description": "Return records with seq strictly below this (older page)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One journal page, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JournalPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/durability/status": {
+      "get": {
+        "tags": [
+          "durability"
+        ],
+        "summary": "GET /api/durability/status — the §9.4 API surface (viewer+; the UI\nrenders \"last verified restore\" and the degraded flag from this).",
+        "operationId": "durability_status",
+        "responses": {
+          "200": {
+            "description": "Durability tier status: degraded flag, upload lag, last verified restore",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DurabilityStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/federation/status": {
+      "get": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "GET /api/federation/status (viewer+): this tier's federation state\n(§8.2 queryable). Root tiers report mode \"root\" and their delegated\nchildren; gateways report upstream, sync bookkeeping and cursors.",
+        "operationId": "federation_status",
+        "responses": {
+          "200": {
+            "description": "This tier's federation state (§8.2 queryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/join-tokens": {
+      "get": {
+        "tags": [
+          "join-tokens"
+        ],
+        "summary": "GET /api/join-tokens (admin/operator) — hashes and metadata only.",
+        "operationId": "index",
+        "responses": {
+          "200": {
+            "description": "All join tokens, newest first (hashes and metadata only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JoinTokenInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "join-tokens"
+        ],
+        "summary": "POST /api/join-tokens (admin/operator, D4). Returns the raw token —\nshown exactly once.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJoinTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Join token created; raw token shown exactly once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedJoinToken"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown device_id for a re-enroll token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Non-positive ttl_secs or max_uses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/join-tokens/{token_hash}": {
+      "delete": {
+        "tags": [
+          "join-tokens"
+        ],
+        "summary": "DELETE /api/join-tokens/{token_hash} (admin/operator) — revoke.\nIdempotent: unknown or already-revoked is still 204.",
+        "operationId": "delete",
+        "parameters": [
+          {
+            "name": "token_hash",
+            "in": "path",
+            "description": "Hex sha256 of the join token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked (idempotent: unknown or already-revoked is still 204)"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/capabilities": {
+      "get": {
+        "tags": [
+          "device"
+        ],
+        "summary": "GET /api/reeve/v1/capabilities (device-auth'd; anonymous pull of\nanything device-facing is disabled by default, §10.2).",
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "description": "Server extension advertisement (spec/reeve/01-framework.md §3.3)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerCapabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/enroll": {
+      "post": {
+        "tags": [
+          "enroll"
+        ],
+        "summary": "POST /api/reeve/v1/enroll (D4 step 1-2).",
+        "operationId": "enroll_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Enrolled (or idempotently resumed); the device credential is shown exactly once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid, expired, or exhausted join token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed enrollment request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Enrollment failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "GET /api/reeve/v1/events (§6.1) — viewer+.",
+        "description": "Event payload schemas (the rev-003/1 table, §6.3) are registered\nas OpenAPI components by `openapi.rs` (D10: the UI's invalidation\nhandlers consume generated event types); the stream itself is SSE\n(`event:` = type name, `data:` = the JSON payload, `id:` = the\nper-stream monotonic id).",
+        "operationId": "events_route",
+        "parameters": [
+          {
+            "name": "types",
+            "in": "query",
+            "description": "Comma-separated event-type filter (§6.1); unknown names ignored. Types: reset, device-presence, deployment-status, terminal-session, health-state, verify-restore, durability-lag, rollout, secret-rotation, federation-sync",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "Resume after this event id (§6.2); when replay is impossible a `reset` event is sent first",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream of cache-invalidation hints (§6.2: droppable, at-most-once)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/journal/{device_id}": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "summary": "POST /api/reeve/v1/journal/{deviceId} — backfill batch\n(spec/reeve/05-health-journal.md §7.3). Replies [`JournalAck`]: the\nhighest contiguously ingested seq, which is what permits agent-side\njournal eviction (§7.1).",
+        "operationId": "journal_backfill",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device id (must match the device credential)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Highest contiguously ingested sequence number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JournalAck"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Token does not match deviceId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid batch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/manifest": {
+      "get": {
+        "tags": [
+          "device"
+        ],
+        "summary": "GET /api/reeve/v1/manifest — the device-scoped State Manifest\n(§10.2). Renders on demand when the device's row is behind the\nlocal head (fresh enrollment, missed pass), then serves the stored\nmanifest bytes verbatim so the ETag is exact.",
+        "operationId": "manifest",
+        "parameters": [
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "description": "RFC 9110 conditional GET against the manifest's strong ETag",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The device's current State Manifest (ETag header set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateManifest"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified (If-None-Match matched)"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "404": {
+            "description": "Enrolled but never rendered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/secrets/resolve": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "summary": "POST /api/reeve/v1/secrets/resolve (device auth; §12.3/§12.6).\nThe device receives exactly its own resolution: names resolve down\nITS chain; unknown/unscoped names are absent from the response.",
+        "operationId": "resolve_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretsResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The device's own resolution; unknown/unscoped names are simply absent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretsResolveResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "404": {
+            "description": "Device row vanished"
+          }
+        }
+      }
+    },
+    "/api/reeve/v1/terminal/{device_id}": {
+      "get": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "GET /api/reeve/v1/terminal/{device_id} — the UI leg (§5.1),\noperator-initiated (§5.3). Every denial is audited (§5.4) and\nanswered BEFORE upgrade.",
+        "operationId": "terminal_route",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Target device id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cols",
+            "in": "query",
+            "description": "Requested PTY columns",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "rows",
+            "in": "query",
+            "description": "Requested PTY rows",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "term",
+            "in": "query",
+            "description": "Requested TERM value",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket upgrade: byte-transparent terminal bridge (xterm.js peer; spec/reeve/03-terminal.md §5)"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role, terminal disabled by desired state, or unattributable auth mode"
+          },
+          "404": {
+            "description": "Unknown device"
+          },
+          "409": {
+            "description": "Device offline or session limit reached"
+          }
+        }
+      }
+    },
+    "/api/render": {
+      "post": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "POST /api/render — operator+ manual kick: re-render every device at\nthe current local head (C4). No-change devices are not bumped (D3).",
+        "operationId": "render_kick",
+        "responses": {
+          "200": {
+            "description": "Render pass report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderKickResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          }
+        }
+      }
+    },
+    "/api/rollouts": {
+      "get": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "GET /api/rollouts (viewer+) — newest first.",
+        "operationId": "list_rollouts",
+        "responses": {
+          "200": {
+            "description": "All rollouts, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RolloutSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "POST /api/rollouts (operator+) — create and immediately start.",
+        "description": "DECISION (baseline): un-advanced cohort devices are held at\n`baselineRevision` (default: the target revision's parent). The\nauthoring commit has usually already rendered every device at head\nby the time the rollout is created (tree.rs render hook), so\ncreation re-pins cohort devices to the baseline render; devices\nthat polled in the gap converge back to it. manifestVersion stays\nstrictly monotonic throughout (§11.5 note — content may revert,\nversions never do). Create the rollout promptly after the commit\nand no device ever sees the staged content early.",
+        "operationId": "create_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Rollout created and started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRolloutResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "409": {
+            "description": "Conflicting active rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid revision, cohort, waves, or gate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rollouts/{rollout_id}": {
+      "get": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "GET /api/rollouts/{id} (viewer+) — full status: waves with live\nper-device classification (§11.6: advanced / converged /\nundetermined / failed), the pinned/unaffected count (§11.1 MUST),\nrecorded gate results, and the transition history.",
+        "operationId": "rollout_status",
+        "parameters": [
+          {
+            "name": "rollout_id",
+            "in": "path",
+            "description": "Rollout id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full rollout status (§11.6)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rollouts/{rollout_id}/abort": {
+      "post": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "POST /api/rollouts/{id}/abort (operator+).",
+        "operationId": "abort_route",
+        "parameters": [
+          {
+            "name": "rollout_id",
+            "in": "path",
+            "description": "Rollout id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aborted (pausing permanently — records and holds retained, §11.2)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutTransitioned"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already terminal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rollouts/{rollout_id}/pause": {
+      "post": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "POST /api/rollouts/{id}/pause (operator+).",
+        "operationId": "pause_route",
+        "parameters": [
+          {
+            "name": "rollout_id",
+            "in": "path",
+            "description": "Rollout id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutTransitioned"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not pausable from its current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rollouts/{rollout_id}/resume": {
+      "post": {
+        "tags": [
+          "rollouts"
+        ],
+        "summary": "POST /api/rollouts/{id}/resume (operator+).",
+        "operationId": "resume_route",
+        "parameters": [
+          {
+            "name": "rollout_id",
+            "in": "path",
+            "description": "Rollout id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumed (a failed gate re-soaks)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutTransitioned"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "Unknown rollout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not resumable from its current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "GET /api/secrets (viewer+): METADATA ONLY — name, scope, version,\ncreated/rotated. Values are never readable through any route, by\nanyone (§12.2 write-only after entry).",
+        "operationId": "list_secrets",
+        "responses": {
+          "200": {
+            "description": "All secrets' metadata, ordered by (name, scope) — never values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretsList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "PUT /api/secrets (operator+; §12.2 write-only). Set or rotate:\nan existing (name, scope) gets a version bump. Kicks a render pass\nso affected devices' manifests pick up the new secrets_version\n(§12.4 propagation).",
+        "operationId": "put_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Set or rotated; metadata only, never the value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "422": {
+            "description": "Invalid secret name or scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/secrets/{scope}/{name}": {
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "DELETE /api/secrets/{scope}/{name} (operator+). 404 when absent.\nKicks a render pass: referencing apps' secrets_version changes\n(their references stop resolving), so consumers are notified.",
+        "operationId": "delete_route",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "path",
+            "description": "Scope: `fleet` | `class.<n>` | `region.<n>` | `site.<n>` | `device.<id>`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretDeleted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role"
+          },
+          "404": {
+            "description": "No such (name, scope)"
+          }
+        }
+      }
+    },
+    "/api/server": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "GET /api/server — server version + compiled-in extension\nadvertisement for the ops UI. Human (session) leg of the\ndevice-auth'd /api/reeve/v1/capabilities; viewer+.",
+        "operationId": "server_info",
+        "responses": {
+          "200": {
+            "description": "Server version + advertised extensions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerCapabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/tier-tokens": {
+      "get": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "GET /api/tier-tokens (viewer+): metadata, never raw tokens.",
+        "operationId": "list_tokens_route",
+        "responses": {
+          "200": {
+            "description": "All tier tokens, newest first (metadata only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TierTokenList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "POST /api/tier-tokens (admin — §8.7 \"issued like join tokens by\nadmin\"). Returns the raw token ONCE.",
+        "operationId": "create_token_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTierTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Tier token created; raw token shown exactly once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedTierToken"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below admin role"
+          },
+          "409": {
+            "description": "Name already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name or site label",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tier-tokens/{name}": {
+      "delete": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "DELETE /api/tier-tokens/{name} (admin): revoke. Idempotent.",
+        "operationId": "revoke_token_route",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Tier token name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked (idempotent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TierTokenRevoked"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below admin role"
+          }
+        }
+      }
+    },
+    "/api/tree/blame/{path}": {
+      "get": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "GET /api/tree/blame/{*path} — every revision at which the path\nchanged, ascending (blame = SELECT, D13). `digest: null` marks a\nremoval.",
+        "operationId": "blame",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Tree path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every revision at which the path changed, ascending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlameEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/tree/diff/{a}/{b}": {
+      "get": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "GET /api/tree/diff/{a}/{b} — manifest diff between two revisions,\ncomputed on read (D13).",
+        "operationId": "diff",
+        "parameters": [
+          {
+            "name": "a",
+            "in": "path",
+            "description": "Base revision id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "b",
+            "in": "path",
+            "description": "Target revision id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Manifest diff a -> b",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DiffEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tree/layers/{layer}": {
+      "put": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "PUT /api/tree/layers/{layer} — apply one layer's complete content\n(D14 batch semantics: the body IS the layer; a file absent from the\nbody is removed). Identical content => no new revision.",
+        "operationId": "put_layer",
+        "parameters": [
+          {
+            "name": "layer",
+            "in": "path",
+            "description": "Layer dir name (D11 grammar, e.g. `20-site.plant-a`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutFilesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Committed (or unchanged)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role, or layer owned by another tier (federation §8.4)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid layer name, path, or base64",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tree/packages/{name}/{version}": {
+      "put": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "PUT /api/tree/packages/{name}/{version} — vendor a margo package\ndirectory into the tree (D11: packages are vendored in v1, keeping\nrender pure). The upload is validated by the margo-package crate\nBEFORE anything is committed: invalid packages produce 422 and no\nrevision.",
+        "operationId": "put_package",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Package version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutFilesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Vendored (or unchanged); includes validation warnings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below operator role, or path owned by another tier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name/version, path, base64, or package validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tree/revisions": {
+      "get": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "GET /api/tree/revisions[?limit=N] — revision history, both streams,\nnewest first.",
+        "operationId": "list_revisions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max revisions returned; default 100, cap 1000",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revision history, both streams, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RevisionInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          }
+        }
+      }
+    },
+    "/api/tree/revisions/{id}": {
+      "get": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "GET /api/tree/revisions/{id} — metadata + full manifest\n(path -> blob digest) at that revision.",
+        "operationId": "get_revision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Revision id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revision metadata + full manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tree/revisions/{id}/files/{path}": {
+      "get": {
+        "tags": [
+          "tree"
+        ],
+        "summary": "GET /api/tree/revisions/{id}/files/{*path} — raw file content at a\nrevision.",
+        "operationId": "file_at",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Revision id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Tree path (e.g. `layers/00-fleet/apps/nginx/app.yaml`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw file content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Below viewer role"
+          },
+          "404": {
+            "description": "Unknown revision or no such path at it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{client_id}/deployments/{deployment_id}/status": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "summary": "POST /api/v1/clients/{clientId}/deployments/{deploymentId}/status —\nMargo live path. Response codes per `deployment-status.md`: 200\nadded/updated, 400 malformed, 401 unauthenticated (middleware),\n403 wrong device, 422 semantic error.",
+        "operationId": "deployment_status",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "description": "Device id (must match the device credential)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "description": "Deployment id being reported on",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploymentStatusManifest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Status added/updated"
+          },
+          "400": {
+            "description": "Malformed DeploymentStatusManifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          },
+          "403": {
+            "description": "Token does not match clientId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Semantic error in the report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "GET /healthz — liveness (operational contract, CLAUDE.md). No auth.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Server is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AppManifestEntry": {
+        "type": "object",
+        "description": "Per-app State Manifest entry. The agent diffs `secrets_version`\nseparately from the bundle digest: bundle unchanged +\n`secrets_version` changed ⇒ re-resolve secrets and minimally\nre-up, no bundle re-pull (spec/reeve/10-secrets.md §12;\ndocs/decisions/agent.md).",
+        "required": [
+          "appId"
+        ],
+        "properties": {
+          "appId": {
+            "type": "string",
+            "description": "Application id (matches the rendered app dir /\n`ApplicationDeployment.spec.applicationId`)."
+          },
+          "deploymentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Deterministic deployment id of the rendered\n`ApplicationDeployment` (docs/decisions/tree-render.md)."
+          },
+          "secrets_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of resolved secret names+versions, never values\n(spec/reeve/10-secrets.md §12; docs/decisions/delivery.md D13).\nSpelled `secrets_version` on the wire — the exact token used\nnormatively throughout spec/reeve/."
+          }
+        }
+      },
+      "BlameEntry": {
+        "type": "object",
+        "description": "One `GET /api/tree/blame/{*path}` entry: a revision at which the\npath changed. `digest: null` marks a removal.",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/RevisionInfo"
+          }
+        }
+      },
+      "BundleRef": {
+        "type": "object",
+        "description": "Render-bundle reference — shaped after Margo's\n`DeploymentBundleRef` (`workload-management-api-1.0.0.yaml`):\nmediaType, digest, advisory sizeBytes, content-addressable url.",
+        "required": [
+          "digest",
+          "url"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "`sha256:<hex>`; MUST be verified after pull — `sizeBytes` is\nadvisory only, never integrity."
+          },
+          "mediaType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sizeBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "Content-addressed pull URL (native OCI /v2 routes,\ndocs/decisions/delivery.md D7)."
+          }
+        }
+      },
+      "CohortSpec": {
+        "type": "object",
+        "description": "Cohort selector (§11 terms): explicit device list, tree selections\n(layer subtrees), and/or label matches (D12: labels select COHORTS\nand filter UIs only — they never select or inject configuration).\nSelectors union; the resolved cohort is recorded at creation.",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "type": "object",
+            "description": "All pairs must match the device's free-form labels.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Layer dir names per D11 grammar (`00-fleet`, `05-class.<n>`,\n`10-region.<n>`, `20-site.<n>`, `30-device.<id>`); the numeric\nprefix is optional here (`site.plant-a` works)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommitResponse": {
+        "type": "object",
+        "description": "Commit outcome of both PUT endpoints (`changed: false` = identical\ncontent, no new revision — D14 idempotence). Package PUTs also\ncarry validation `warnings`.",
+        "required": [
+          "revision",
+          "changed",
+          "stream"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/i64"
+          },
+          "stream": {
+            "type": "string",
+            "description": "Always `local` — authoring only ever targets the local stream."
+          },
+          "warnings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Package validation warnings (package PUTs only)."
+          }
+        }
+      },
+      "ComponentStatus": {
+        "type": "object",
+        "description": "`components[]` entry (`deployment-status.md` \"Component\nAttributes\"; `ComponentStatus` in\n`workload-management-api-1.0.0.yaml`). MUST contain one entry per\ncomponent of the referenced `ApplicationDeployment`.",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StatusError"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeploymentState"
+          }
+        }
+      },
+      "CreateJoinTokenRequest": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Existing device to bind a re-enroll token to (D4)."
+          },
+          "max_uses": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Default 1 (D4)."
+          },
+          "ttl_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds until expiry; default 86400 (24h, D4)."
+          }
+        }
+      },
+      "CreateRequest": {
+        "type": "object",
+        "description": "POST /api/rollouts body. Waves: exactly one of `waves` (explicit\npartition), `strategy` (e.g. `[\"1\", \"10%\", \"rest\"]`), `waveCount`,\nor none (single wave = whole cohort).",
+        "required": [
+          "revision",
+          "cohort"
+        ],
+        "properties": {
+          "baselineRevision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hold revision for not-yet-advanced devices; default: the target\nrevision's parent (see module docs — DECISION below)."
+          },
+          "cohort": {
+            "$ref": "#/components/schemas/CohortSpec"
+          },
+          "failureThreshold": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/GateSpec"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The source tree revision (§11.1) — an existing local revision."
+          },
+          "strategy": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "waveCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "waves": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateRolloutResponse": {
+        "type": "object",
+        "description": "`POST /api/rollouts` 201 body.",
+        "required": [
+          "rolloutId",
+          "revision",
+          "state",
+          "cohort",
+          "waves"
+        ],
+        "properties": {
+          "cohort": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Resolved cohort device ids."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rolloutId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "Always `active` at creation."
+          },
+          "waves": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "The wave partition (device ids per wave)."
+          }
+        }
+      },
+      "CreateTierTokenRequest": {
+        "type": "object",
+        "description": "Body of POST /api/tier-tokens.",
+        "required": [
+          "name",
+          "site"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique child-tier name (e.g. the gateway hostname)."
+          },
+          "site": {
+            "type": "string",
+            "description": "The child's site label — the layer family it owns (§8.4)."
+          },
+          "syncPrefixes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Tree-path prefixes the child may sync; default\n[`DEFAULT_SYNC_PREFIXES`]."
+          },
+          "ttlSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional TTL; absent => non-expiring (revocation is the lever)."
+          }
+        }
+      },
+      "CreatedJoinToken": {
+        "type": "object",
+        "description": "`POST /api/join-tokens` body: the raw token, shown exactly once.",
+        "required": [
+          "join_token",
+          "token_hash",
+          "expires_at",
+          "max_uses"
+        ],
+        "properties": {
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "join_token": {
+            "type": "string",
+            "description": "The raw join token (`rvj_<64 hex>`) — only the hash is stored."
+          },
+          "max_uses": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "token_hash": {
+            "type": "string"
+          }
+        }
+      },
+      "CreatedTierToken": {
+        "type": "object",
+        "description": "`POST /api/tier-tokens` body: the raw tier token, shown once.",
+        "required": [
+          "token",
+          "name",
+          "site",
+          "syncPrefixes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "syncPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "token": {
+            "type": "string",
+            "description": "The raw tier token — only the hash is stored."
+          }
+        }
+      },
+      "DeploymentState": {
+        "type": "string",
+        "description": "Deployment/component state\n(`workload-management-api-1.0.0.yaml` `DeploymentStatusManifest.\nstatus.state` enum; `deployment-status.md` \"Status Attributes\").",
+        "enum": [
+          "pending",
+          "installing",
+          "installed",
+          "removing",
+          "removed",
+          "failed"
+        ]
+      },
+      "DeploymentStatus": {
+        "type": "object",
+        "description": "Overall deployment `status` (`deployment-status.md` \"Status\nAttributes\"; an object, per the example manifest and the OpenAPI\nschema — the attribute table's `[]status` type is contradicted by\nboth and is read as a spec typo).",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StatusError"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeploymentState"
+          }
+        }
+      },
+      "DeploymentStatusEvent": {
+        "type": "object",
+        "description": "`deployment-status` (§6.3): an ingested manifest changed a\ndeployment's overall state. `state` is the Margo enum\n(`margo::status::DeploymentState`).",
+        "required": [
+          "ts",
+          "deviceId",
+          "deploymentId",
+          "state"
+        ],
+        "properties": {
+          "deploymentId": {
+            "type": "string"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeploymentState"
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "DeploymentStatusManifest": {
+        "type": "object",
+        "description": "`DeploymentStatusManifest` request body\n(`deployment-status.md` \"Request Body Attributes\"; posted to\n`POST /api/v1/clients/{clientId}/deployments/{deploymentId}/status`).",
+        "required": [
+          "apiVersion",
+          "kind",
+          "deploymentId",
+          "status"
+        ],
+        "properties": {
+          "apiVersion": {
+            "type": "string"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComponentStatus"
+            }
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "UUID of the deployment specification, assigned by the WFM."
+          },
+          "deviceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required only when reporting on behalf of a child device\n(`deployment-status.md`); full hierarchy path when applicable."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reeve": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReeveStatusExtension",
+                "description": "reeve additive extension object, rev-004/1\n(spec/reeve/05-health-journal.md §7.3). A vanilla WFM ignores\nit; all Margo-defined fields above are present and unchanged\n(spec/reeve/01-framework.md §3.7 audit row REV-004)."
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeploymentStatus"
+          }
+        }
+      },
+      "DeviceClass": {
+        "type": "string",
+        "description": "§11.6 per-device rollout view: advanced / converged / healthy /\nundetermined / failed. `Pending` = not yet advanced by its wave.",
+        "enum": [
+          "pending",
+          "converged",
+          "failed",
+          "undetermined"
+        ]
+      },
+      "DeviceDeploymentState": {
+        "type": "object",
+        "description": "Current state of one deployment on a device\n(`deployment_status_current` row).",
+        "required": [
+          "deploymentId",
+          "state",
+          "receivedAt"
+        ],
+        "properties": {
+          "deploymentId": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Device-assigned RFC 3339 timestamp (absent for vanilla reports)."
+          },
+          "receivedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server receipt time, unix seconds."
+          },
+          "seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Journal seq of the report (absent for vanilla Margo reports)."
+          },
+          "state": {
+            "type": "string",
+            "description": "Margo deployment state (`pending` … `failed`)."
+          }
+        }
+      },
+      "DeviceDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DeviceSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "render": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RenderProvenance",
+                    "description": "`null` when the device has never been rendered."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "`GET /api/devices/{device_id}` response."
+      },
+      "DevicePresenceEvent": {
+        "type": "object",
+        "description": "`device-presence` (§6.3): channel opens/drops.",
+        "required": [
+          "ts",
+          "deviceId",
+          "state",
+          "since"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string",
+            "description": "RFC 3339 — since when the device has been in `state`."
+          },
+          "state": {
+            "$ref": "#/components/schemas/PresenceState"
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceStatus": {
+        "type": "object",
+        "required": [
+          "deviceId",
+          "advanced",
+          "unaffected",
+          "status"
+        ],
+        "properties": {
+          "advanced": {
+            "type": "boolean"
+          },
+          "advancedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeviceClass"
+          },
+          "unaffected": {
+            "type": "boolean",
+            "description": "D12/§11.1: render materially unchanged by the rollout — counts\nas converged, surfaced so green never silently means \"nothing\ndeployed here\"."
+          }
+        }
+      },
+      "DeviceSummary": {
+        "type": "object",
+        "description": "One device as listed by `GET /api/devices`.",
+        "required": [
+          "deviceId",
+          "hostname",
+          "arch",
+          "agentVersion",
+          "enrolledAt",
+          "labels",
+          "stale",
+          "presence",
+          "deployments"
+        ],
+        "properties": {
+          "agentVersion": {
+            "type": "string"
+          },
+          "arch": {
+            "type": "string"
+          },
+          "class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Layer-chain membership (D11: fleet -> class? -> region -> site\n-> device), each nullable."
+          },
+          "deployments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceDeploymentState"
+            },
+            "description": "Current per-deployment states."
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "enrolledAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "object",
+            "description": "Free-form labels (docs/decisions/tree-render.md D12: labels\ngroup and filter, never configure).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "lastSeenAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds of last contact; `null` = never seen."
+          },
+          "presence": {
+            "$ref": "#/components/schemas/PresenceInfo"
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Identity superseded by a newer enrollment from the same\nhostname (docs/decisions/agent.md D4 wiped-box case)."
+          },
+          "tierOrigin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Child tier this device reached us through (federation §8.3);\n`null` = enrolled here."
+          }
+        }
+      },
+      "DiffEntry": {
+        "type": "object",
+        "description": "One `GET /api/tree/diff/{a}/{b}` entry. `change` decides which\ndigests are present: `added` carries `new`, `removed` carries\n`old`, `modified` carries both.",
+        "required": [
+          "path",
+          "change"
+        ],
+        "properties": {
+          "change": {
+            "type": "string",
+            "description": "`added` | `removed` | `modified`."
+          },
+          "new": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "old": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "DiskSample": {
+        "type": "object",
+        "description": "Disk usage/free for one filesystem (spec/reeve/05-health-journal.md\n§7.2). Inner field names are reeve-chosen (the spec pins the\nsample's semantics, not its sub-shape); extensible like the rest\nof the sample.",
+        "properties": {
+          "freeBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "totalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "usedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": {}
+      },
+      "DurabilityLagEvent": {
+        "type": "object",
+        "description": "`durability-lag` (§6.3): changeset upload lag crossed/cleared a\nthreshold — ops dashboard signal (spec/reeve/07-durability.md\n§9.3: changesets are keyed by generation id + monotonic seq).",
+        "required": [
+          "ts",
+          "generation",
+          "lastSeq",
+          "lagSeconds"
+        ],
+        "properties": {
+          "generation": {
+            "type": "string",
+            "description": "Snapshot generation id (spec/reeve/07-durability.md §9.2 —\ngeneration keys are string-shaped, e.g. `<rfc3339>-<schema>`)."
+          },
+          "lagSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lastSeq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Last uploaded changeset sequence within the generation.",
+            "minimum": 0
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "DurabilityStatus": {
+        "type": "object",
+        "description": "The queryable status shape (§9.2 degraded flag, §9.3 upload lag,\n§9.4 \"last verified restore\"). A deployment whose verify-restore\nhas never succeeded reads as having NO durability tier (§9.4) —\n`effective_tier` encodes exactly that rule for the UI.",
+        "required": [
+          "tier",
+          "degraded",
+          "pending_changesets"
+        ],
+        "properties": {
+          "degraded": {
+            "type": "boolean"
+          },
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current (last successfully shipped) snapshot generation."
+          },
+          "last_changeset_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_changeset_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_snapshot_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_verify": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VerifySummary"
+              }
+            ]
+          },
+          "pending_changesets": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "snapshot_age_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "tier": {
+            "type": "string"
+          }
+        }
+      },
+      "DurabilityStatusResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DurabilityStatus"
+          },
+          {
+            "type": "object",
+            "required": [
+              "effective_tier",
+              "epoch"
+            ],
+            "properties": {
+              "effective_tier": {
+                "type": "string",
+                "description": "`none` | `snapshot` | `changeset` | `none (unverified)`."
+              },
+              "epoch": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Current server epoch (`settings.server_epoch`, spec/reeve/07-durability.md\n§9.5): the high 16 bits of every manifestVersion. Restore fencing\nincrements it — the ops UI surfaces it next to durability posture.",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "`GET /api/durability/status` body: [`DurabilityStatus`] plus the\n§9.4 `effective_tier` (an unverified tier reads as none)."
+      },
+      "EnrollRequest": {
+        "type": "object",
+        "description": "Request body of `POST /api/reeve/v1/enroll` (D4 step 1):\n`{ join_token, hostname, arch, agent_version }`.",
+        "required": [
+          "join_token",
+          "hostname",
+          "arch",
+          "agent_version"
+        ],
+        "properties": {
+          "agent_version": {
+            "type": "string",
+            "description": "reeve-agent version performing the enrollment."
+          },
+          "arch": {
+            "type": "string",
+            "description": "Target architecture (e.g. `x86_64`, `aarch64`)."
+          },
+          "hostname": {
+            "type": "string",
+            "description": "The enrolling box's hostname — the idempotency key for a retried\ninstall with the same join token (D4)."
+          },
+          "join_token": {
+            "type": "string",
+            "description": "Operator-created join token (D4: TTL + max-uses, stored hashed\nserver-side). A re-enroll token is the same grammar, bound to an\nexisting device_id server-side."
+          }
+        }
+      },
+      "EnrollResponse": {
+        "type": "object",
+        "description": "Response of `POST /api/reeve/v1/enroll` (D4 step 2): the issued\nidentity and the ONE device credential for every device-facing\nsurface (docs/decisions/auth.md D1).",
+        "required": [
+          "device_id",
+          "device_token"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "Server-issued device identity."
+          },
+          "device_token": {
+            "type": "string",
+            "description": "Enrollment-issued bearer token (`rvd_<64 hex>`). Shown exactly\nonce; the server keeps only its hash."
+          },
+          "resumed": {
+            "type": "boolean",
+            "description": "True when this enrollment resumed an existing device identity\n(idempotent re-run of the same join token + hostname, or a\nre-enroll token bound to an existing device — D4)."
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "The one error-body shape every JSON error response uses:\n`{ \"error\": \"<human-readable message>\" }`. Schema component for the\nD10 openapi.json (docs/decisions/ui.md); handlers keep building the\nbody via `json!` — this type documents the contract.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "FederationStatus": {
+        "type": "object",
+        "description": "`GET /api/federation/status` body. `mode` decides which fields are\npresent: `gateway` carries the upstream/sync bookkeeping, `root`\nonly `childTiers` and `upstreamOriginHead`.",
+        "required": [
+          "mode",
+          "childTiers"
+        ],
+        "properties": {
+          "childTiers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active (non-revoked) child tier tokens."
+          },
+          "forwardedSeqTotal": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "lastSyncAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "lastSyncError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "description": "`root` | `gateway`."
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "syncIntervalSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upstreamLocalRow": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Local row id of the upstream head."
+          },
+          "upstreamOriginHead": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Parent-tier revision id of the synced upstream head."
+          }
+        }
+      },
+      "FederationSyncEvent": {
+        "type": "object",
+        "description": "Federation sync outcome (`federation-sync` payload;\nspec/reeve/06-federation.md §8.2 — sync state is queryable AND\nevented; an id/digest divergence is surfaced here too, never\nauto-resolved). Additive to the rev-003/1 table: unknown event\ntypes are ignored by older clients (§6.3).",
+        "required": [
+          "ts",
+          "upstream",
+          "ok",
+          "appended"
+        ],
+        "properties": {
+          "appended": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revisions appended by this tick.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "originHead": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Parent-tier revision id of the synced upstream head, when known.",
+            "minimum": 0
+          },
+          "ts": {
+            "type": "string"
+          },
+          "upstream": {
+            "type": "string",
+            "description": "The parent tier URL this gateway syncs from."
+          }
+        }
+      },
+      "GatePolicy": {
+        "type": "object",
+        "description": "Effective gate policy in a [`RolloutDetail`].",
+        "required": [
+          "soakSecs",
+          "gateTimeoutSecs",
+          "passFraction"
+        ],
+        "properties": {
+          "gateTimeoutSecs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passFraction": {
+            "type": "number",
+            "format": "double"
+          },
+          "soakSecs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "undeterminedAllowance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "GateSpec": {
+        "type": "object",
+        "description": "Gate policy overrides (§11.3); defaults above.",
+        "properties": {
+          "gateTimeoutSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "passFraction": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "soakSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "undeterminedAllowance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Max undetermined devices a passing gate tolerates. Absent =\nthe whole wave may be undetermined (chronically-offline fleets,\nLaw 5); 0 = strict."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HealthKind": {
+        "type": "string",
+        "description": "What is degraded (spec/reeve/05-health-journal.md §7.4):\n`Device` — the device itself breaches thresholds; `Link` — the\npath was down but backfill shows the device was fine.",
+        "enum": [
+          "device",
+          "link"
+        ]
+      },
+      "HealthSample": {
+        "type": "object",
+        "description": "A point-in-time health sample (spec/reeve/05-health-journal.md\n§7.2): disk usage/free per relevant filesystem, memory usage,\nload averages, per-workload container restart counts, agent\nversion, clock skew vs the server. \"Fields are extensible;\nreceivers MUST ignore unknown sample fields\" — unknown fields are\ncaptured (and re-emitted) via `extra`.",
+        "properties": {
+          "agentVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clockSkewMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Clock skew versus the server in milliseconds, measured\nopportunistically when connected (§7.2 — skew matters because\noriginal timestamps are device-assigned)."
+          },
+          "disk": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Per-filesystem usage, keyed by mount point / identifier.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DiskSample"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "load": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Load averages (1/5/15 min)."
+          },
+          "memory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MemorySample"
+              }
+            ]
+          },
+          "restarts": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Per-workload container restart counts, from the active\nProvider.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {
+          "description": "Extensible sample fields (§7.2): preserved verbatim so the\npayload round-trips without loss."
+        }
+      },
+      "HealthState": {
+        "type": "string",
+        "description": "Server-side health classification\n(spec/reeve/05-health-journal.md §7.4). `Unknown` (offline window\nnot yet backfilled) MUST be surfaced as unknown, never silently\nassumed healthy or dead.",
+        "enum": [
+          "healthy",
+          "degraded",
+          "unknown"
+        ]
+      },
+      "HealthStateEvent": {
+        "type": "object",
+        "description": "`health-state` (§6.3): health classification changed\n(spec/reeve/05-health-journal.md §7.4).",
+        "required": [
+          "ts",
+          "deviceId",
+          "state",
+          "kind"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/HealthKind"
+          },
+          "state": {
+            "$ref": "#/components/schemas/HealthState"
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthzResponse": {
+        "type": "object",
+        "description": "`GET /healthz` body.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `ok`."
+          }
+        }
+      },
+      "JoinTokenInfo": {
+        "type": "object",
+        "description": "One join token row, as listed to operators (never the raw token).",
+        "required": [
+          "token_hash",
+          "created_by",
+          "created_at",
+          "expires_at",
+          "max_uses",
+          "uses"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set => re-enroll token bound to this existing device (D4)."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_uses": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revoked_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "token_hash": {
+            "type": "string"
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "JournalAck": {
+        "type": "object",
+        "description": "Response: \"the server replies with the highest contiguously\ningested sequence number; that acknowledgement is what permits\njournal eviction\" (spec/reeve/05-health-journal.md §7.3).",
+        "required": [
+          "ackedSeq"
+        ],
+        "properties": {
+          "ackedSeq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "JournalBatch": {
+        "type": "object",
+        "description": "Request body of `POST /api/reeve/v1/journal/{deviceId}`\n(spec/reeve/05-health-journal.md §7.3): unacknowledged records in\nbatches ordered by sequence number.",
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JournalRecord"
+            }
+          }
+        }
+      },
+      "JournalEntry": {
+        "type": "object",
+        "description": "One status-journal record (spec/reeve/05-health-journal.md §7.3).",
+        "required": [
+          "seq",
+          "observedAt",
+          "receivedAt",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`status` | `health` | `lifecycle` | `gap`."
+          },
+          "observedAt": {
+            "type": "string",
+            "description": "Device-assigned original RFC 3339 timestamp, verbatim."
+          },
+          "payload": {
+            "description": "The journaled payload; absent for gap marks."
+          },
+          "receivedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server receipt time, unix seconds."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "JournalPage": {
+        "type": "object",
+        "description": "`GET /api/devices/{device_id}/journal` response: newest first.",
+        "required": [
+          "records"
+        ],
+        "properties": {
+          "nextBeforeSeq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `before_seq` to fetch the next (older) page; absent\nwhen this page reached the start of the journal."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JournalEntry"
+            }
+          }
+        }
+      },
+      "JournalRecord": {
+        "type": "object",
+        "description": "One journal record in a backfill batch\n(spec/reeve/05-health-journal.md §7.3 backfill path). Idempotency\nkey is `(deviceId, seq)` — deviceId travels in the endpoint path.",
+        "required": [
+          "seq",
+          "observedAt",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/JournalRecordKind"
+          },
+          "observedAt": {
+            "type": "string",
+            "description": "Original timestamp (RFC 3339), assigned when journaled."
+          },
+          "payload": {
+            "description": "The journaled payload: a full `DeploymentStatusManifest` for\n`status`, a [`HealthSample`] for `health`, a free-form object\nfor `lifecycle`, absent for `gap`."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Monotonic per-device sequence number (§7.1).",
+            "minimum": 0
+          }
+        }
+      },
+      "JournalRecordKind": {
+        "type": "string",
+        "description": "Kind of a journal record (spec/reeve/05-health-journal.md §7.1):\nstatus reports, health samples, agent lifecycle marks (start,\nconverge begin/end, provider errors), and gap marks (forced\neviction of unacknowledged records — so the server can\ndistinguish \"evicted\" from \"never happened\").",
+        "enum": [
+          "status",
+          "health",
+          "lifecycle",
+          "gap"
+        ]
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "ManifestVersion": {
+        "type": "integer",
+        "format": "int64",
+        "description": "`manifestVersion` — logically the pair `(epoch, counter)` compared\nlexicographically, encoded on the wire as ONE monotonically\nincreasing unsigned 64-bit integer: epoch in the high 16 bits,\ncounter in the low 48 (spec/reeve/08-packaging.md §10.2). Plain\ninteger comparison IS the pair comparison, and the wire value\nstays exactly Margo's modeled shape (`ManifestVersion`: monotonic\nu64 in `[1, 2^64-1]`, `workload-management-api-1.0.0.yaml` —\n\"The first manifest MUST use 1\").\n\nAgent rules (§10.2): a non-increasing value is rejected and logged\nas a SECURITY event; an increase that bumps the epoch bits is\naccepted and logged as a NOTABLE event (a restore happened,\nspec/reeve/07-durability.md §9.5 restore fencing).",
+        "minimum": 0
+      },
+      "MemorySample": {
+        "type": "object",
+        "description": "Memory usage (spec/reeve/05-health-journal.md §7.2).",
+        "properties": {
+          "totalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "usedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": {}
+      },
+      "PresenceInfo": {
+        "type": "object",
+        "description": "Presence answer (spec/reeve/02-channel.md §4.3 vocabulary).",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "since": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds: channel-open time when online via channel,\nlast contact otherwise; `null` = never seen."
+          },
+          "state": {
+            "$ref": "#/components/schemas/PresenceState",
+            "description": "`online` | `offline`."
+          }
+        }
+      },
+      "PresenceState": {
+        "type": "string",
+        "description": "Device presence state (`device-presence` payload, §6.3;\nspec/reeve/02-channel.md §4.3).",
+        "enum": [
+          "online",
+          "offline"
+        ]
+      },
+      "PutFilesRequest": {
+        "type": "object",
+        "description": "Body of both PUT endpoints: the complete content of one layer (or\npackage) as relative path -> base64(content). Base64 keeps the wire\nJSON binary-safe (compose files are text, but package resources —\nicons — are not).",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "object",
+            "description": "Relative path within the layer/package -> standard-base64 bytes.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Commit message; a default is derived when absent."
+          }
+        }
+      },
+      "PutSecretRequest": {
+        "type": "object",
+        "description": "Body of PUT /api/secrets. `value` is plaintext in RAM only — it is\nsealed before touching the DB and never echoed back or logged.",
+        "required": [
+          "name",
+          "scope",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "ReeveStatusExtension": {
+        "type": "object",
+        "description": "The additive `reeve` object on a `DeploymentStatusManifest`\n(spec/reeve/05-health-journal.md §7.3, rev-001 example):\n\n```json\n\"reeve\": { \"observedAt\": \"2026-07-10T06:12:03Z\", \"seq\": 48211,\n           \"health\": { \"...\": \"...\" } }\n```\n\nThe server uses `observedAt`/`seq` to place the report in history\nand detect records it already holds. A vanilla WFM ignores the\nwhole object (spec/reeve/01-framework.md §3.7 audit row REV-004).",
+        "required": [
+          "observedAt",
+          "seq"
+        ],
+        "properties": {
+          "health": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HealthSample"
+              }
+            ]
+          },
+          "observedAt": {
+            "type": "string",
+            "description": "Original timestamp (RFC 3339) — assigned when journaled on\nthe device, never rewritten (§7 \"original timestamp\")."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Monotonic per-device sequence number (§7.1).",
+            "minimum": 0
+          }
+        }
+      },
+      "RenderFailure": {
+        "type": "object",
+        "description": "One failed device in a [`RenderKickResponse`].",
+        "required": [
+          "device",
+          "error"
+        ],
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "RenderKickResponse": {
+        "type": "object",
+        "description": "`POST /api/render` body: the render pass report.",
+        "required": [
+          "rendered",
+          "unchanged",
+          "failed"
+        ],
+        "properties": {
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RenderFailure"
+            }
+          },
+          "rendered": {
+            "type": "integer",
+            "description": "Devices whose manifest changed (and was bumped).",
+            "minimum": 0
+          },
+          "unchanged": {
+            "type": "integer",
+            "description": "Devices already current (no bump — D3).",
+            "minimum": 0
+          }
+        }
+      },
+      "RenderProvenance": {
+        "type": "object",
+        "description": "Render provenance of a device's current State Manifest\n(`device_manifests` row + the manifest's per-app entries;\ndocs/decisions/delivery.md D13).",
+        "required": [
+          "manifestVersion",
+          "epoch",
+          "counter",
+          "generation",
+          "contentDigest",
+          "renderedRevision",
+          "etag",
+          "updatedAt",
+          "apps"
+        ],
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppManifestEntry"
+            },
+            "description": "Per-app manifest entries — carries each app's `secrets_version`\n(spec/reeve/10-secrets.md §12.4)."
+          },
+          "bundleDigest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OCI image manifest digest the device pulls; `null` = zero apps."
+          },
+          "contentDigest": {
+            "type": "string",
+            "description": "sha256 over the rendered apps/** file set (change detector)."
+          },
+          "counter": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Low 48 bits — monotonic per device.",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int32",
+            "description": "High 16 bits — bumped by restore fencing\n(spec/reeve/07-durability.md §9.5).",
+            "minimum": 0
+          },
+          "etag": {
+            "type": "string",
+            "description": "Strong ETag of the served manifest JSON."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "D2 render generation counter."
+          },
+          "manifestVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The packed (epoch, counter) wire u64\n(spec/reeve/08-packaging.md §10.2).",
+            "minimum": 0
+          },
+          "renderedRevision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Local-stream revision id this device was last rendered against."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds."
+          }
+        }
+      },
+      "ResetEvent": {
+        "type": "object",
+        "description": "`reset` (§6.2): replay from `Last-Event-ID` not possible; the\nclient MUST treat all cached state as stale and refetch.",
+        "required": [
+          "ts"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "ResolvedSecret": {
+        "type": "object",
+        "description": "One resolved secret: plaintext value + its version (the rotation\ncounter that feeds the manifest-level `secrets_version` hash,\nspec/reeve/10-secrets.md §12.4).",
+        "required": [
+          "value",
+          "version"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "Plaintext. RAM/TLS/env-file only (§12.3); never log."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version at resolution time — audit metadata, safe to log.",
+            "minimum": 0
+          }
+        }
+      },
+      "RevisionDetail": {
+        "type": "object",
+        "description": "`GET /api/tree/revisions/{id}` body.",
+        "required": [
+          "revision",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "object",
+            "description": "Full manifest at that revision: tree path -> blob digest.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "revision": {
+            "$ref": "#/components/schemas/RevisionInfo"
+          }
+        }
+      },
+      "RevisionInfo": {
+        "type": "object",
+        "description": "Revision metadata as served to clients.",
+        "required": [
+          "id",
+          "stream",
+          "author",
+          "message",
+          "created_at"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "id": {
+            "$ref": "#/components/schemas/i64"
+          },
+          "message": {
+            "type": "string"
+          },
+          "parent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/i64"
+              }
+            ]
+          },
+          "stream": {
+            "type": "string",
+            "description": "`local` | `upstream` (two-stream federation, D13)."
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "description": "Human role (docs/decisions/auth.md D1): admin | operator | viewer.\n\nOrdered so `Viewer < Operator < Admin`; \"at least operator\" is\n`role >= Role::Operator`.",
+        "enum": [
+          "viewer",
+          "operator",
+          "admin"
+        ]
+      },
+      "RolloutDetail": {
+        "type": "object",
+        "description": "`GET /api/rollouts/{rollout_id}` body (§11.6 full status).",
+        "required": [
+          "rolloutId",
+          "revision",
+          "state",
+          "currentWave",
+          "cohort",
+          "gate",
+          "failureThreshold",
+          "createdBy",
+          "createdAt",
+          "updatedAt",
+          "pinnedUnaffected",
+          "waves",
+          "transitions"
+        ],
+        "properties": {
+          "cohort": {
+            "type": "object",
+            "description": "The cohort spec as recorded at creation."
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "currentWave": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failureThreshold": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/GatePolicy"
+          },
+          "pauseReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pinnedUnaffected": {
+            "type": "integer",
+            "format": "int64",
+            "description": "§11.1 MUST: devices whose render the rollout does not change."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rolloutId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransitionEntry"
+            }
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "waves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveStatus"
+            }
+          }
+        }
+      },
+      "RolloutEvent": {
+        "type": "object",
+        "description": "`rollout` (§6.3): rollout/wave transition.",
+        "required": [
+          "ts",
+          "rolloutId",
+          "wave",
+          "phase"
+        ],
+        "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/RolloutPhase"
+          },
+          "rolloutId": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string"
+          },
+          "wave": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Wave index within the rollout's ordered wave list\n(spec/reeve/09-rollouts.md).",
+            "minimum": 0
+          }
+        }
+      },
+      "RolloutPhase": {
+        "type": "string",
+        "description": "Rollout/wave phase (`rollout` payload, §6.3;\nspec/reeve/09-rollouts.md §11.6).",
+        "enum": [
+          "started",
+          "gated",
+          "paused",
+          "completed",
+          "failed"
+        ]
+      },
+      "RolloutSummary": {
+        "type": "object",
+        "description": "One `GET /api/rollouts` entry.",
+        "required": [
+          "rolloutId",
+          "revision",
+          "state",
+          "currentWave",
+          "createdBy",
+          "createdAt",
+          "updatedAt",
+          "waveCount",
+          "deviceCount"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "currentWave": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deviceCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pauseReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rolloutId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`active` | `paused` | `aborted` | `completed`."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "waveCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RolloutTransitioned": {
+        "type": "object",
+        "description": "`POST /api/rollouts/{id}/pause|resume|abort` body.",
+        "required": [
+          "rolloutId",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`paused` | `resumed` | `aborted`."
+          },
+          "rolloutId": {
+            "type": "string"
+          }
+        }
+      },
+      "SecretDeleted": {
+        "type": "object",
+        "description": "`DELETE /api/secrets/{scope}/{name}` body.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "description": "Always `true` (absence is a 404)."
+          }
+        }
+      },
+      "SecretInfo": {
+        "type": "object",
+        "description": "One secret's METADATA — the only readable surface after entry\n(§12.2 write-only: name, scope, version, timestamps; never values).",
+        "required": [
+          "name",
+          "scope",
+          "version",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rotated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SecretRotationEvent": {
+        "type": "object",
+        "description": "`secret-rotation` (§6.3): a secret version changed / all affected\ndevices report converged. Carries metadata only, never values\n(§6.4; spec/reeve/10-secrets.md).",
+        "required": [
+          "ts",
+          "secretName",
+          "scope",
+          "version",
+          "state"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "secretName": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SecretRotationState"
+          },
+          "ts": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Secret version (bumped on rotation, spec/reeve/10-secrets.md).",
+            "minimum": 0
+          }
+        }
+      },
+      "SecretRotationState": {
+        "type": "string",
+        "description": "Secret rotation propagation state (`secret-rotation` payload,\n§6.3; spec/reeve/10-secrets.md §12).",
+        "enum": [
+          "propagating",
+          "converged"
+        ]
+      },
+      "SecretWritten": {
+        "type": "object",
+        "description": "`PUT /api/secrets` body: metadata of the written secret — never\nthe value (§12.2 write-only).",
+        "required": [
+          "name",
+          "scope",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version after the write (bumped on rotation).",
+            "minimum": 0
+          }
+        }
+      },
+      "SecretsList": {
+        "type": "object",
+        "description": "`GET /api/secrets` body.",
+        "required": [
+          "secrets"
+        ],
+        "properties": {
+          "secrets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretInfo"
+            }
+          }
+        }
+      },
+      "SecretsResolveRequest": {
+        "type": "object",
+        "description": "Request body: the secret names referenced (`${secret:<name>}`)\nby the requesting device's rendered apps. Names only — never\nvalues; names are metadata (spec/reeve/10-secrets.md §12.6\n\"who resolved what version when — metadata, not values\").",
+        "required": [
+          "secrets"
+        ],
+        "properties": {
+          "secrets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SecretsResolveResponse": {
+        "type": "object",
+        "description": "Response body: resolutions keyed by requested name. A name the\ndevice may not read — or that does not exist — is simply ABSENT\n(indistinguishable by design: the resolve endpoint must not be a\nsecret-existence oracle beyond the device's own scope, §12.6).",
+        "required": [
+          "secrets"
+        ],
+        "properties": {
+          "secrets": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ResolvedSecret"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ServerCapabilities": {
+        "type": "object",
+        "description": "The server-side advertisement at\n`GET /api/reeve/v1/capabilities` — \"its extension list plus\nserver version\" (spec/reeve/01-framework.md §3.3). 404 or any\nerror means \"vanilla Margo server\"; the agent proceeds with pure\nMargo behavior.",
+        "required": [
+          "serverVersion"
+        ],
+        "properties": {
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Same `\"rev-NNN/V\"` grammar as the agent side."
+          },
+          "serverVersion": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "required": [
+          "user",
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "required": [
+          "setup_token",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "setup_token": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "StateManifest": {
+        "type": "object",
+        "description": "The reeve State Manifest body returned by\n`GET /api/reeve/v1/manifest` (spec/reeve/08-packaging.md §10.2) —\nState-Manifest-shaped after Margo's `UnsignedAppStateManifest`\n(`workload-management-api-1.0.0.yaml`): `manifestVersion`,\nrender-bundle digest + pull URL, per-app `secrets_version`.",
+        "required": [
+          "manifestVersion"
+        ],
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppManifestEntry"
+            },
+            "description": "Per-app entries carrying `secrets_version`\n(docs/decisions/delivery.md D13; spec/reeve/10-secrets.md §12)."
+          },
+          "bundle": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BundleRef",
+                "description": "Render-bundle reference. Follows Margo's `DeploymentBundleRef`\nnull rule: with zero apps the property MUST be present with\nthe value `null`, never omitted — so it is always serialized."
+              }
+            ]
+          },
+          "manifestVersion": {
+            "$ref": "#/components/schemas/ManifestVersion"
+          }
+        }
+      },
+      "StatusError": {
+        "type": "object",
+        "description": "`error` element (`deployment-status.md` \"Error Attributes\").\nReserved gateway-generated codes: 101 unknown child device, 102\nchild device unreachable, 103 autonomous placement not supported.",
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Device id (full hierarchy) or component/deployment name that\ngenerated the error (`deployment-status.md`)."
+          }
+        }
+      },
+      "TerminalPhase": {
+        "type": "string",
+        "description": "Terminal session lifecycle phase (`terminal-session` payload,\n§6.3; spec/reeve/03-terminal.md §5.4).",
+        "enum": [
+          "requested",
+          "opened",
+          "closed",
+          "denied"
+        ]
+      },
+      "TerminalSessionEvent": {
+        "type": "object",
+        "description": "`terminal-session` (§6.3): session lifecycle transition. Exposes\nsession METADATA only (who, which device, when) — intentional\naudit visibility; MUST NOT ever carry session content (§6.4).",
+        "required": [
+          "ts",
+          "sessionId",
+          "deviceId",
+          "phase",
+          "user"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/TerminalPhase"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "TierTokenInfo": {
+        "type": "object",
+        "description": "One `GET /api/tier-tokens` entry (metadata, never raw tokens).",
+        "required": [
+          "name",
+          "site",
+          "syncPrefixes",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revokedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "site": {
+            "type": "string"
+          },
+          "syncPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TierTokenList": {
+        "type": "object",
+        "description": "`GET /api/tier-tokens` body.",
+        "required": [
+          "tierTokens"
+        ],
+        "properties": {
+          "tierTokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TierTokenInfo"
+            }
+          }
+        }
+      },
+      "TierTokenRevoked": {
+        "type": "object",
+        "description": "`DELETE /api/tier-tokens/{name}` body.",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean",
+            "description": "False when the name was unknown or already revoked."
+          }
+        }
+      },
+      "TransitionEntry": {
+        "type": "object",
+        "description": "One audit transition in a [`RolloutDetail`].",
+        "required": [
+          "seq",
+          "ts",
+          "action",
+          "author"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "VerifyRestoreEvent": {
+        "type": "object",
+        "description": "`verify-restore` (§6.3): a verify-restore run completed.",
+        "required": [
+          "ts",
+          "outcome",
+          "snapshotTs"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/VerifyRestoreOutcome"
+          },
+          "snapshotTs": {
+            "type": "string",
+            "description": "RFC 3339 timestamp of the snapshot that was verified."
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "VerifyRestoreOutcome": {
+        "type": "string",
+        "description": "Outcome of a verify-restore run (`verify-restore` payload, §6.3;\nspec/reeve/07-durability.md §9.4).",
+        "enum": [
+          "ok",
+          "failed"
+        ]
+      },
+      "VerifySummary": {
+        "type": "object",
+        "description": "Latest recorded run, for the status surface (\"last verified\nrestore: <when>\", §9.4).",
+        "required": [
+          "finished_at",
+          "outcome"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        }
+      },
+      "WaveCounts": {
+        "type": "object",
+        "required": [
+          "total",
+          "converged",
+          "failed",
+          "undetermined",
+          "pending",
+          "unaffected"
+        ],
+        "properties": {
+          "converged": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unaffected": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "undetermined": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "WaveStatus": {
+        "type": "object",
+        "description": "One wave in a [`RolloutDetail`].",
+        "required": [
+          "index",
+          "state",
+          "gate",
+          "counts",
+          "devices"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/WaveCounts"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceStatus"
+            }
+          },
+          "gate": {
+            "type": "object",
+            "description": "Recorded gate evaluation (free-form; §11.3)."
+          },
+          "gatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "soakStartedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` | `advancing` | `soaking` | `passed` | `failed`."
+          }
+        }
+      },
+      "WhoAmI": {
+        "type": "object",
+        "description": "`GET /api/auth/me` body. `kind` decides which identity fields are\npresent: `human` carries `user`+`role`, `device` carries\n`deviceId`, `anonymous` carries neither.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effectiveRole": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "The role this identity ACTS with (mode-aware: REEVE_AUTH=none\nmaps anonymous to admin); `null` = no access."
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "`human` | `device` | `anonymous`."
+          },
+          "role": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Role"
+              }
+            ]
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "i64": {
+        "type": "integer",
+        "format": "int64"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Login, logout, first-boot setup, whoami"
+    },
+    {
+      "name": "join-tokens",
+      "description": "Device enrollment join tokens (operator surface)"
+    },
+    {
+      "name": "tree",
+      "description": "Layered deployment tree: authoring, history, diff, blame, render"
+    },
+    {
+      "name": "devices",
+      "description": "Device fleet: presence, deployment states, render provenance, journal"
+    },
+    {
+      "name": "durability",
+      "description": "Durability tier status (spec/reeve/07-durability.md)"
+    },
+    {
+      "name": "secrets",
+      "description": "Write-only secrets vault metadata (spec/reeve/10-secrets.md)"
+    },
+    {
+      "name": "rollouts",
+      "description": "Staged rollouts (spec/reeve/09-rollouts.md)"
+    },
+    {
+      "name": "federation",
+      "description": "Tier tokens and federation sync status (spec/reeve/06-federation.md)"
+    },
+    {
+      "name": "events",
+      "description": "Live status stream, SSE (spec/reeve/04-status-stream.md)"
+    },
+    {
+      "name": "terminal",
+      "description": "Remote terminal bridge (spec/reeve/03-terminal.md)"
+    },
+    {
+      "name": "device",
+      "description": "Device-facing wire surface (enroll, manifest poll, status ingest)"
+    },
+    {
+      "name": "ops",
+      "description": "Operational endpoints"
+    }
+  ]
+}

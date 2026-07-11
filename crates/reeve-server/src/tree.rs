@@ -132,7 +132,7 @@ pub fn validate_rel_path(path: &str) -> Result<(), String> {
 /// package) as relative path -> base64(content). Base64 keeps the wire
 /// JSON binary-safe (compose files are text, but package resources —
 /// icons — are not).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutFilesRequest {
     /// Commit message; a default is derived when absent.
     pub message: Option<String>,
@@ -141,14 +141,60 @@ pub struct PutFilesRequest {
 }
 
 /// Revision metadata as served to clients.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RevisionInfo {
     pub id: RevisionId,
+    /// `local` | `upstream` (two-stream federation, D13).
     pub stream: &'static str,
     pub parent: Option<RevisionId>,
     pub author: String,
     pub message: String,
+    /// RFC 3339.
     pub created_at: String,
+}
+
+/// Commit outcome of both PUT endpoints (`changed: false` = identical
+/// content, no new revision — D14 idempotence). Package PUTs also
+/// carry validation `warnings`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CommitResponse {
+    pub revision: RevisionId,
+    pub changed: bool,
+    /// Always `local` — authoring only ever targets the local stream.
+    pub stream: String,
+    /// Package validation warnings (package PUTs only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
+}
+
+/// `GET /api/tree/revisions/{id}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RevisionDetail {
+    pub revision: RevisionInfo,
+    /// Full manifest at that revision: tree path -> blob digest.
+    pub files: BTreeMap<String, String>,
+}
+
+/// One `GET /api/tree/diff/{a}/{b}` entry. `change` decides which
+/// digests are present: `added` carries `new`, `removed` carries
+/// `old`, `modified` carries both.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DiffEntry {
+    pub path: String,
+    /// `added` | `removed` | `modified`.
+    pub change: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new: Option<String>,
+}
+
+/// One `GET /api/tree/blame/{*path}` entry: a revision at which the
+/// path changed. `digest: null` marks a removal.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BlameEntry {
+    pub revision: RevisionInfo,
+    pub digest: Option<String>,
 }
 
 impl From<Revision> for RevisionInfo {
@@ -335,6 +381,19 @@ fn commit_subtree(
 /// PUT /api/tree/layers/{layer} — apply one layer's complete content
 /// (D14 batch semantics: the body IS the layer; a file absent from the
 /// body is removed). Identical content => no new revision.
+#[utoipa::path(
+    put,
+    path = "/api/tree/layers/{layer}",
+    tag = "tree",
+    params(("layer" = String, Path, description = "Layer dir name (D11 grammar, e.g. `20-site.plant-a`)")),
+    request_body = PutFilesRequest,
+    responses(
+        (status = 200, description = "Committed (or unchanged)", body = CommitResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role, or layer owned by another tier (federation §8.4)", body = device_api::ErrorBody),
+        (status = 422, description = "Invalid layer name, path, or base64", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn put_layer(
     State(state): State<AppState>,
     identity: Identity,
@@ -401,6 +460,22 @@ pub async fn put_layer(
 /// render pure). The upload is validated by the margo-package crate
 /// BEFORE anything is committed: invalid packages produce 422 and no
 /// revision.
+#[utoipa::path(
+    put,
+    path = "/api/tree/packages/{name}/{version}",
+    tag = "tree",
+    params(
+        ("name" = String, Path, description = "Package name"),
+        ("version" = String, Path, description = "Package version"),
+    ),
+    request_body = PutFilesRequest,
+    responses(
+        (status = 200, description = "Vendored (or unchanged); includes validation warnings", body = CommitResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role, or path owned by another tier", body = device_api::ErrorBody),
+        (status = 422, description = "Invalid name/version, path, base64, or package validation failure", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn put_package(
     State(state): State<AppState>,
     identity: Identity,
@@ -510,6 +585,17 @@ pub struct HistoryQuery {
 
 /// GET /api/tree/revisions[?limit=N] — revision history, both streams,
 /// newest first.
+#[utoipa::path(
+    get,
+    path = "/api/tree/revisions",
+    tag = "tree",
+    params(("limit" = Option<usize>, Query, description = "Max revisions returned; default 100, cap 1000")),
+    responses(
+        (status = 200, description = "Revision history, both streams, newest first", body = Vec<RevisionInfo>),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn list_revisions(
     State(state): State<AppState>,
     identity: Identity,
@@ -546,6 +632,18 @@ fn history(store: &RevisionStore, limit: usize) -> Result<Vec<Revision>, revisio
 
 /// GET /api/tree/revisions/{id} — metadata + full manifest
 /// (path -> blob digest) at that revision.
+#[utoipa::path(
+    get,
+    path = "/api/tree/revisions/{id}",
+    tag = "tree",
+    params(("id" = i64, Path, description = "Revision id")),
+    responses(
+        (status = 200, description = "Revision metadata + full manifest", body = RevisionDetail),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+        (status = 404, description = "Unknown revision", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn get_revision(
     State(state): State<AppState>,
     identity: Identity,
@@ -571,6 +669,21 @@ pub async fn get_revision(
 
 /// GET /api/tree/revisions/{id}/files/{*path} — raw file content at a
 /// revision.
+#[utoipa::path(
+    get,
+    path = "/api/tree/revisions/{id}/files/{path}",
+    tag = "tree",
+    params(
+        ("id" = i64, Path, description = "Revision id"),
+        ("path" = String, Path, description = "Tree path (e.g. `layers/00-fleet/apps/nginx/app.yaml`)"),
+    ),
+    responses(
+        (status = 200, description = "Raw file content", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+        (status = 404, description = "Unknown revision or no such path at it", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn file_at(
     State(state): State<AppState>,
     identity: Identity,
@@ -597,6 +710,21 @@ pub async fn file_at(
 
 /// GET /api/tree/diff/{a}/{b} — manifest diff between two revisions,
 /// computed on read (D13).
+#[utoipa::path(
+    get,
+    path = "/api/tree/diff/{a}/{b}",
+    tag = "tree",
+    params(
+        ("a" = i64, Path, description = "Base revision id"),
+        ("b" = i64, Path, description = "Target revision id"),
+    ),
+    responses(
+        (status = 200, description = "Manifest diff a -> b", body = Vec<DiffEntry>),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+        (status = 404, description = "Unknown revision", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn diff(
     State(state): State<AppState>,
     identity: Identity,
@@ -631,6 +759,17 @@ pub async fn diff(
 /// GET /api/tree/blame/{*path} — every revision at which the path
 /// changed, ascending (blame = SELECT, D13). `digest: null` marks a
 /// removal.
+#[utoipa::path(
+    get,
+    path = "/api/tree/blame/{path}",
+    tag = "tree",
+    params(("path" = String, Path, description = "Tree path")),
+    responses(
+        (status = 200, description = "Every revision at which the path changed, ascending", body = Vec<BlameEntry>),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn blame(
     State(state): State<AppState>,
     identity: Identity,

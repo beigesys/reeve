@@ -60,6 +60,18 @@ pub fn router(svc: Arc<dyn EnrollmentService>) -> Router {
 }
 
 /// POST /api/reeve/v1/enroll (D4 step 1-2).
+#[utoipa::path(
+    post,
+    path = "/api/reeve/v1/enroll",
+    tag = "enroll",
+    request_body = EnrollRequest,
+    responses(
+        (status = 200, description = "Enrolled (or idempotently resumed); the device credential is shown exactly once", body = EnrollResponse),
+        (status = 401, description = "Invalid, expired, or exhausted join token", body = crate::ErrorBody),
+        (status = 422, description = "Malformed enrollment request", body = crate::ErrorBody),
+        (status = 500, description = "Enrollment failed", body = crate::ErrorBody),
+    ),
+)]
 pub async fn enroll_route(
     State(svc): State<Arc<dyn EnrollmentService>>,
     Json(mut req): Json<EnrollRequest>,

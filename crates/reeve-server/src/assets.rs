@@ -108,6 +108,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn embedded_openapi_if_present_is_json() {
+        // Embed-if-present (build.rs): a build made after `just
+        // gen-api` carries ui/openapi.json; whenever it is embedded it
+        // must be valid JSON with the §10.1 top-level shape. Content
+        // drift against the live annotations is CI's check-api-drift,
+        // not a unit test.
+        if let Some(doc) = OPENAPI_JSON {
+            let v: serde_json::Value = serde_json::from_str(doc).expect("embedded openapi parses");
+            assert!(v["openapi"].is_string());
+            assert!(v["paths"].is_object());
+        }
+    }
+
     #[tokio::test]
     async fn non_get_is_404() {
         let res = spa_fallback(Method::POST, "/anything".parse().unwrap()).await;

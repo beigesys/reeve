@@ -32,7 +32,7 @@ pub struct VerifyOutcome {
 
 /// Latest recorded run, for the status surface ("last verified
 /// restore: <when>", §9.4).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct VerifySummary {
     pub finished_at: i64,
     pub outcome: String,

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 /// A vanilla WFM sees one unknown optional object and ignores it. A
 /// manifest with no `reeve` key means: no extensions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ReeveCapabilities {
     pub agent_version: String,
@@ -57,6 +58,7 @@ impl ReeveCapabilities {
 /// error means "vanilla Margo server"; the agent proceeds with pure
 /// Margo behavior.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     pub server_version: String,

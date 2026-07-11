@@ -78,7 +78,7 @@ pub trait Durability: Send + Sync {
 /// §9.4 "last verified restore"). A deployment whose verify-restore
 /// has never succeeded reads as having NO durability tier (§9.4) —
 /// `effective_tier` encodes exactly that rule for the UI.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct DurabilityStatus {
     pub tier: String,
     pub degraded: bool,
@@ -261,8 +261,36 @@ pub fn spawn_tasks(engine: Arc<dyn Durability>, cfg: &crate::config::DurabilityC
     });
 }
 
+/// `GET /api/durability/status` body: [`DurabilityStatus`] plus the
+/// §9.4 `effective_tier` (an unverified tier reads as none).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DurabilityStatusResponse {
+    #[serde(flatten)]
+    pub status: DurabilityStatus,
+    /// `none` | `snapshot` | `changeset` | `none (unverified)`.
+    pub effective_tier: String,
+    /// Current server epoch (`settings.server_epoch`, spec/reeve/07-durability.md
+    /// §9.5): the high 16 bits of every manifestVersion. Restore fencing
+    /// increments it — the ops UI surfaces it next to durability posture.
+    pub epoch: u16,
+}
+
 /// GET /api/durability/status — the §9.4 API surface (viewer+; the UI
 /// renders "last verified restore" and the degraded flag from this).
+#[utoipa::path(
+    get,
+    path = "/api/durability/status",
+    // Explicit id: `status_route` fn names collide across durability /
+    // federation / rollouts, and orval derives hook names from
+    // operationIds (D10) — they must be globally unique.
+    operation_id = "durability_status",
+    tag = "durability",
+    responses(
+        (status = 200, description = "Durability tier status: degraded flag, upload lag, last verified restore", body = DurabilityStatusResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn status_route(
     axum::extract::State(state): axum::extract::State<AppState>,
     identity: device_api::Identity,
@@ -275,7 +303,18 @@ pub async fn status_route(
     }
     let status = state.durability.status();
     let effective = status.effective_tier().to_string();
+    let epoch = {
+        let conn = state.db.lock().expect("db mutex poisoned");
+        match crate::render::server_epoch(&conn) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "durability status: reading server_epoch failed");
+                0
+            }
+        }
+    };
     let mut body = serde_json::to_value(&status).expect("status serializes");
     body["effective_tier"] = serde_json::Value::String(effective);
+    body["epoch"] = serde_json::Value::from(epoch);
     axum::Json(body).into_response()
 }

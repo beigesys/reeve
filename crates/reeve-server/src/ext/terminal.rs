@@ -207,6 +207,24 @@ pub fn rendered_terminal_config(
 /// GET /api/reeve/v1/terminal/{device_id} — the UI leg (§5.1),
 /// operator-initiated (§5.3). Every denial is audited (§5.4) and
 /// answered BEFORE upgrade.
+#[utoipa::path(
+    get,
+    path = "/api/reeve/v1/terminal/{device_id}",
+    tag = "terminal",
+    params(
+        ("device_id" = String, Path, description = "Target device id"),
+        ("cols" = Option<u16>, Query, description = "Requested PTY columns"),
+        ("rows" = Option<u16>, Query, description = "Requested PTY rows"),
+        ("term" = Option<String>, Query, description = "Requested TERM value"),
+    ),
+    responses(
+        (status = 101, description = "WebSocket upgrade: byte-transparent terminal bridge (xterm.js peer; spec/reeve/03-terminal.md §5)"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role, terminal disabled by desired state, or unattributable auth mode"),
+        (status = 404, description = "Unknown device"),
+        (status = 409, description = "Device offline or session limit reached"),
+    ),
+)]
 pub async fn terminal_route(
     State(state): State<AppState>,
     identity: Identity,

@@ -4,8 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# D10 API type pipeline (docs/decisions/ui.md): utoipa ToSchema derives
+# on the wire types, OFF by default — the crate stays serde-only
+# (CLAUDE.md layout) for every consumer except openapi.json generation.
+openapi = ["dep:utoipa"]
+
 [dependencies]
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+utoipa = { workspace = true, optional = true }

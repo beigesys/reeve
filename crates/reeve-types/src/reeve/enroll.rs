@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// Request body of `POST /api/reeve/v1/enroll` (D4 step 1):
 /// `{ join_token, hostname, arch, agent_version }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollRequest {
     /// Operator-created join token (D4: TTL + max-uses, stored hashed
     /// server-side). A re-enroll token is the same grammar, bound to an
@@ -32,6 +33,7 @@ pub struct EnrollRequest {
 /// identity and the ONE device credential for every device-facing
 /// surface (docs/decisions/auth.md D1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollResponse {
     /// Server-issued device identity.
     pub device_id: String,

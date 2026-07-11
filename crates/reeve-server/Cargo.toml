@@ -67,7 +67,9 @@ ext-rollouts = []
 embedded-agents = []
 
 [dependencies]
-reeve-types = { path = "../reeve-types" }
+# openapi: ToSchema on the wire types — the D10 pipeline registers
+# them (SSE payloads included) as OpenAPI components (openapi.rs).
+reeve-types = { path = "../reeve-types", features = ["openapi"] }
 margo-package = { path = "../margo-package" }
 desired-state = { path = "../desired-state" }
 revision-store = { path = "../revision-store" }
@@ -79,6 +81,9 @@ axum = { workspace = true }
 rusqlite = { workspace = true, features = ["hooks"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# D10 API type pipeline (docs/decisions/ui.md): every route annotated,
+# doc assembled in openapi.rs, printed by `reeve-server openapi`.
+utoipa = { workspace = true }
 # C7 ext-secrets: parse rendered deployment.yaml to collect
 # `${secret:<name>}` parameter references (same parser family as
 # reeve-agent's B4 ext/secrets.rs). Already in-tree via reeve-types.

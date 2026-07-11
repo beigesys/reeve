@@ -284,7 +284,7 @@ fn internal(e: impl std::fmt::Display) -> Response {
 }
 
 /// Body of POST /api/tier-tokens.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTierTokenRequest {
     /// Unique child-tier name (e.g. the gateway hostname).
@@ -300,8 +300,59 @@ pub struct CreateTierTokenRequest {
     pub ttl_secs: Option<i64>,
 }
 
+/// `POST /api/tier-tokens` body: the raw tier token, shown once.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedTierToken {
+    /// The raw tier token — only the hash is stored.
+    pub token: String,
+    pub name: String,
+    pub site: String,
+    pub sync_prefixes: Vec<String>,
+}
+
+/// One `GET /api/tier-tokens` entry (metadata, never raw tokens).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TierTokenInfo {
+    pub name: String,
+    pub site: String,
+    pub sync_prefixes: Vec<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// `GET /api/tier-tokens` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TierTokenList {
+    pub tier_tokens: Vec<TierTokenInfo>,
+}
+
+/// `DELETE /api/tier-tokens/{name}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TierTokenRevoked {
+    /// False when the name was unknown or already revoked.
+    pub revoked: bool,
+}
+
 /// POST /api/tier-tokens (admin — §8.7 "issued like join tokens by
 /// admin"). Returns the raw token ONCE.
+#[utoipa::path(
+    post,
+    path = "/api/tier-tokens",
+    tag = "federation",
+    request_body = CreateTierTokenRequest,
+    responses(
+        (status = 200, description = "Tier token created; raw token shown exactly once", body = CreatedTierToken),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below admin role"),
+        (status = 409, description = "Name already exists", body = device_api::ErrorBody),
+        (status = 422, description = "Invalid name or site label", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn create_token_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -350,6 +401,16 @@ pub async fn create_token_route(
 }
 
 /// GET /api/tier-tokens (viewer+): metadata, never raw tokens.
+#[utoipa::path(
+    get,
+    path = "/api/tier-tokens",
+    tag = "federation",
+    responses(
+        (status = 200, description = "All tier tokens, newest first (metadata only)", body = TierTokenList),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn list_tokens_route(State(state): State<AppState>, identity: Identity) -> Response {
     if let Err(status) = require_at_least(&state, &identity, Role::Viewer) {
         return status.into_response();
@@ -382,6 +443,17 @@ pub async fn list_tokens_route(State(state): State<AppState>, identity: Identity
 }
 
 /// DELETE /api/tier-tokens/{name} (admin): revoke. Idempotent.
+#[utoipa::path(
+    delete,
+    path = "/api/tier-tokens/{name}",
+    tag = "federation",
+    params(("name" = String, Path, description = "Tier token name")),
+    responses(
+        (status = 200, description = "Revoked (idempotent)", body = TierTokenRevoked),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below admin role"),
+    ),
+)]
 pub async fn revoke_token_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -1147,9 +1219,51 @@ pub fn spawn_sync(state: AppState) {
     });
 }
 
+/// `GET /api/federation/status` body. `mode` decides which fields are
+/// present: `gateway` carries the upstream/sync bookkeeping, `root`
+/// only `childTiers` and `upstreamOriginHead`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FederationStatus {
+    /// `root` | `gateway`.
+    pub mode: String,
+    /// Active (non-revoked) child tier tokens.
+    pub child_tiers: i64,
+    /// Parent-tier revision id of the synced upstream head.
+    pub upstream_origin_head: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_interval_secs: Option<i64>,
+    /// Local row id of the upstream head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_local_row: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarded_seq_total: Option<i64>,
+}
+
 /// GET /api/federation/status (viewer+): this tier's federation state
 /// (§8.2 queryable). Root tiers report mode "root" and their delegated
 /// children; gateways report upstream, sync bookkeeping and cursors.
+#[utoipa::path(
+    get,
+    path = "/api/federation/status",
+    // Explicit id: `status_route` fn names collide across durability /
+    // federation / rollouts; operationIds must be globally unique (D10).
+    operation_id = "federation_status",
+    tag = "federation",
+    responses(
+        (status = 200, description = "This tier's federation state (§8.2 queryable)", body = FederationStatus),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn status_route(State(state): State<AppState>, identity: Identity) -> Response {
     if let Err(status) = require_at_least(&state, &identity, Role::Viewer) {
         return status.into_response();

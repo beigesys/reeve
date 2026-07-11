@@ -136,7 +136,7 @@ pub fn delete(conn: &Connection, name: &str, scope: &str) -> rusqlite::Result<bo
 
 /// One secret's METADATA — the only readable surface after entry
 /// (§12.2 write-only: name, scope, version, timestamps; never values).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct SecretInfo {
     pub name: String,
     pub scope: String,
@@ -431,6 +431,17 @@ fn internal_error(e: impl std::fmt::Display) -> Response {
 /// POST /api/reeve/v1/secrets/resolve (device auth; §12.3/§12.6).
 /// The device receives exactly its own resolution: names resolve down
 /// ITS chain; unknown/unscoped names are absent from the response.
+#[utoipa::path(
+    post,
+    path = "/api/reeve/v1/secrets/resolve",
+    tag = "device",
+    request_body = reeve_types::reeve::secrets::SecretsResolveRequest,
+    responses(
+        (status = 200, description = "The device's own resolution; unknown/unscoped names are simply absent", body = reeve_types::reeve::secrets::SecretsResolveResponse),
+        (status = 401, description = "Unauthenticated"),
+        (status = 404, description = "Device row vanished"),
+    ),
+)]
 pub async fn resolve_route(
     State(state): State<AppState>,
     DeviceIdentity(device_id): DeviceIdentity,
@@ -489,7 +500,7 @@ pub async fn resolve_route(
 
 /// Body of PUT /api/secrets. `value` is plaintext in RAM only — it is
 /// sealed before touching the DB and never echoed back or logged.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutSecretRequest {
     pub name: String,
     pub scope: String,
@@ -498,10 +509,32 @@ pub struct PutSecretRequest {
     pub value: String,
 }
 
+/// `PUT /api/secrets` body: metadata of the written secret — never
+/// the value (§12.2 write-only).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SecretWritten {
+    pub name: String,
+    pub scope: String,
+    /// Version after the write (bumped on rotation).
+    pub version: u64,
+}
+
 /// PUT /api/secrets (operator+; §12.2 write-only). Set or rotate:
 /// an existing (name, scope) gets a version bump. Kicks a render pass
 /// so affected devices' manifests pick up the new secrets_version
 /// (§12.4 propagation).
+#[utoipa::path(
+    put,
+    path = "/api/secrets",
+    tag = "secrets",
+    request_body = PutSecretRequest,
+    responses(
+        (status = 200, description = "Set or rotated; metadata only, never the value", body = SecretWritten),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 422, description = "Invalid secret name or scope", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn put_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -567,9 +600,31 @@ pub async fn put_route(
     Json(json!({ "name": body.name, "scope": body.scope, "version": version })).into_response()
 }
 
+/// `DELETE /api/secrets/{scope}/{name}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SecretDeleted {
+    /// Always `true` (absence is a 404).
+    pub deleted: bool,
+}
+
 /// DELETE /api/secrets/{scope}/{name} (operator+). 404 when absent.
 /// Kicks a render pass: referencing apps' secrets_version changes
 /// (their references stop resolving), so consumers are notified.
+#[utoipa::path(
+    delete,
+    path = "/api/secrets/{scope}/{name}",
+    tag = "secrets",
+    params(
+        ("scope" = String, Path, description = "Scope: `fleet` | `class.<n>` | `region.<n>` | `site.<n>` | `device.<id>`"),
+        ("name" = String, Path, description = "Secret name"),
+    ),
+    responses(
+        (status = 200, description = "Deleted", body = SecretDeleted),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "No such (name, scope)"),
+    ),
+)]
 pub async fn delete_route(
     State(state): State<AppState>,
     identity: Identity,
@@ -624,9 +679,28 @@ pub async fn delete_route(
     Json(json!({ "deleted": true })).into_response()
 }
 
+/// `GET /api/secrets` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SecretsList {
+    pub secrets: Vec<SecretInfo>,
+}
+
 /// GET /api/secrets (viewer+): METADATA ONLY — name, scope, version,
 /// created/rotated. Values are never readable through any route, by
 /// anyone (§12.2 write-only after entry).
+#[utoipa::path(
+    get,
+    path = "/api/secrets",
+    // Explicit id: `list_route` fn names collide with rollouts;
+    // operationIds must be globally unique (D10).
+    operation_id = "list_secrets",
+    tag = "secrets",
+    responses(
+        (status = 200, description = "All secrets' metadata, ordered by (name, scope) — never values", body = SecretsList),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn list_route(State(state): State<AppState>, identity: Identity) -> Response {
     if let Err(status) = crate::join_tokens::require_at_least(&state, &identity, Role::Viewer) {
         return status.into_response();

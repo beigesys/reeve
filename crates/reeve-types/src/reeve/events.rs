@@ -17,6 +17,7 @@ use crate::reeve::health::{HealthKind, HealthState};
 /// `reset` (§6.2): replay from `Last-Event-ID` not possible; the
 /// client MUST treat all cached state as stale and refetch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ResetEvent {
     pub ts: String,
@@ -25,6 +26,7 @@ pub struct ResetEvent {
 /// Device presence state (`device-presence` payload, §6.3;
 /// spec/reeve/02-channel.md §4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum PresenceState {
     Online,
@@ -33,6 +35,7 @@ pub enum PresenceState {
 
 /// `device-presence` (§6.3): channel opens/drops.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DevicePresenceEvent {
     pub ts: String,
@@ -46,6 +49,7 @@ pub struct DevicePresenceEvent {
 /// deployment's overall state. `state` is the Margo enum
 /// (`margo::status::DeploymentState`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentStatusEvent {
     pub ts: String,
@@ -57,6 +61,7 @@ pub struct DeploymentStatusEvent {
 /// Terminal session lifecycle phase (`terminal-session` payload,
 /// §6.3; spec/reeve/03-terminal.md §5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalPhase {
     Requested,
@@ -69,6 +74,7 @@ pub enum TerminalPhase {
 /// session METADATA only (who, which device, when) — intentional
 /// audit visibility; MUST NOT ever carry session content (§6.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionEvent {
     pub ts: String,
@@ -81,6 +87,7 @@ pub struct TerminalSessionEvent {
 /// `health-state` (§6.3): health classification changed
 /// (spec/reeve/05-health-journal.md §7.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct HealthStateEvent {
     pub ts: String,
@@ -92,6 +99,7 @@ pub struct HealthStateEvent {
 /// Outcome of a verify-restore run (`verify-restore` payload, §6.3;
 /// spec/reeve/07-durability.md §9.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum VerifyRestoreOutcome {
     Ok,
@@ -100,6 +108,7 @@ pub enum VerifyRestoreOutcome {
 
 /// `verify-restore` (§6.3): a verify-restore run completed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyRestoreEvent {
     pub ts: String,
@@ -114,6 +123,7 @@ pub struct VerifyRestoreEvent {
 /// threshold — ops dashboard signal (spec/reeve/07-durability.md
 /// §9.3: changesets are keyed by generation id + monotonic seq).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DurabilityLagEvent {
     pub ts: String,
@@ -128,6 +138,7 @@ pub struct DurabilityLagEvent {
 /// Rollout/wave phase (`rollout` payload, §6.3;
 /// spec/reeve/09-rollouts.md §11.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum RolloutPhase {
     Started,
@@ -139,6 +150,7 @@ pub enum RolloutPhase {
 
 /// `rollout` (§6.3): rollout/wave transition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RolloutEvent {
     pub ts: String,
@@ -152,6 +164,7 @@ pub struct RolloutEvent {
 /// Secret rotation propagation state (`secret-rotation` payload,
 /// §6.3; spec/reeve/10-secrets.md §12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum SecretRotationState {
     Propagating,
@@ -162,6 +175,7 @@ pub enum SecretRotationState {
 /// devices report converged. Carries metadata only, never values
 /// (§6.4; spec/reeve/10-secrets.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct SecretRotationEvent {
     pub ts: String,
@@ -178,6 +192,7 @@ pub struct SecretRotationEvent {
 /// auto-resolved). Additive to the rev-003/1 table: unknown event
 /// types are ignored by older clients (§6.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct FederationSyncEvent {
     pub ts: String,

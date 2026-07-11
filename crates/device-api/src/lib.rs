@@ -13,6 +13,15 @@ pub mod enroll;
 pub mod identity;
 pub mod status;
 
+/// The one error-body shape every JSON error response uses:
+/// `{ "error": "<human-readable message>" }`. Schema component for the
+/// D10 openapi.json (docs/decisions/ui.md); handlers keep building the
+/// body via `json!` — this type documents the contract.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct ErrorBody {
+    pub error: String,
+}
+
 pub use device_token::{
     DEVICE_TOKEN_PREFIX, DeviceTokenStore, TokenStoreError, device_auth, generate_device_token,
     token_hash,

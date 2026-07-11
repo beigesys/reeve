@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Ordered so `Viewer < Operator < Admin`; "at least operator" is
 /// `role >= Role::Operator`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Viewer,

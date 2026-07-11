@@ -89,6 +89,26 @@ fn reset_event() -> Event {
 }
 
 /// GET /api/reeve/v1/events (§6.1) — viewer+.
+///
+/// Event payload schemas (the rev-003/1 table, §6.3) are registered
+/// as OpenAPI components by `openapi.rs` (D10: the UI's invalidation
+/// handlers consume generated event types); the stream itself is SSE
+/// (`event:` = type name, `data:` = the JSON payload, `id:` = the
+/// per-stream monotonic id).
+#[utoipa::path(
+    get,
+    path = "/api/reeve/v1/events",
+    tag = "events",
+    params(
+        ("types" = Option<String>, Query, description = "Comma-separated event-type filter (§6.1); unknown names ignored. Types: reset, device-presence, deployment-status, terminal-session, health-state, verify-restore, durability-lag, rollout, secret-rotation, federation-sync"),
+        ("Last-Event-ID" = Option<u64>, Header, description = "Resume after this event id (§6.2); when replay is impossible a `reset` event is sent first"),
+    ),
+    responses(
+        (status = 200, description = "Server-Sent Events stream of cache-invalidation hints (§6.2: droppable, at-most-once)", content_type = "text/event-stream", body = String),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below viewer role"),
+    ),
+)]
 pub async fn events_route(
     State(state): State<AppState>,
     identity: Identity,

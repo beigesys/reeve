@@ -43,6 +43,7 @@ pub enum ManifestVersionError {
 /// accepted and logged as a NOTABLE event (a restore happened,
 /// spec/reeve/07-durability.md §9.5 restore fencing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct ManifestVersion(pub u64);
 
@@ -112,6 +113,7 @@ pub const RENDER_BUNDLE_MEDIA_TYPE: &str = "application/vnd.reeve.render-bundle.
 /// (`workload-management-api-1.0.0.yaml`): `manifestVersion`,
 /// render-bundle digest + pull URL, per-app `secrets_version`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct StateManifest {
     pub manifest_version: ManifestVersion,
@@ -129,6 +131,7 @@ pub struct StateManifest {
 /// `DeploymentBundleRef` (`workload-management-api-1.0.0.yaml`):
 /// mediaType, digest, advisory sizeBytes, content-addressable url.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BundleRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +152,7 @@ pub struct BundleRef {
 /// re-up, no bundle re-pull (spec/reeve/10-secrets.md §12;
 /// docs/decisions/agent.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AppManifestEntry {
     /// Application id (matches the rendered app dir /

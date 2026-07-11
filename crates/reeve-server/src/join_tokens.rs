@@ -36,7 +36,7 @@ pub fn generate_join_token() -> String {
 }
 
 /// One join token row, as listed to operators (never the raw token).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct JoinTokenInfo {
     pub token_hash: String,
     pub created_by: String,
@@ -128,7 +128,7 @@ fn internal(e: impl std::fmt::Display) -> Response {
     StatusCode::INTERNAL_SERVER_ERROR.into_response()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateJoinTokenRequest {
     /// Seconds until expiry; default 86400 (24h, D4).
     pub ttl_secs: Option<i64>,
@@ -138,8 +138,32 @@ pub struct CreateJoinTokenRequest {
     pub device_id: Option<String>,
 }
 
+/// `POST /api/join-tokens` body: the raw token, shown exactly once.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CreatedJoinToken {
+    /// The raw join token (`rvj_<64 hex>`) — only the hash is stored.
+    pub join_token: String,
+    pub token_hash: String,
+    pub expires_at: i64,
+    pub max_uses: i64,
+    pub device_id: Option<String>,
+}
+
 /// POST /api/join-tokens (admin/operator, D4). Returns the raw token —
 /// shown exactly once.
+#[utoipa::path(
+    post,
+    path = "/api/join-tokens",
+    tag = "join-tokens",
+    request_body = CreateJoinTokenRequest,
+    responses(
+        (status = 201, description = "Join token created; raw token shown exactly once", body = CreatedJoinToken),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+        (status = 404, description = "Unknown device_id for a re-enroll token", body = device_api::ErrorBody),
+        (status = 422, description = "Non-positive ttl_secs or max_uses", body = device_api::ErrorBody),
+    ),
+)]
 pub async fn create(
     State(state): State<AppState>,
     identity: Identity,
@@ -208,6 +232,16 @@ pub async fn create(
 }
 
 /// GET /api/join-tokens (admin/operator) — hashes and metadata only.
+#[utoipa::path(
+    get,
+    path = "/api/join-tokens",
+    tag = "join-tokens",
+    responses(
+        (status = 200, description = "All join tokens, newest first (hashes and metadata only)", body = Vec<JoinTokenInfo>),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+    ),
+)]
 pub async fn index(State(state): State<AppState>, identity: Identity) -> Response {
     if let Err(status) = require_at_least(&state, &identity, Role::Operator) {
         return status.into_response();
@@ -221,6 +255,17 @@ pub async fn index(State(state): State<AppState>, identity: Identity) -> Respons
 
 /// DELETE /api/join-tokens/{token_hash} (admin/operator) — revoke.
 /// Idempotent: unknown or already-revoked is still 204.
+#[utoipa::path(
+    delete,
+    path = "/api/join-tokens/{token_hash}",
+    tag = "join-tokens",
+    params(("token_hash" = String, Path, description = "Hex sha256 of the join token")),
+    responses(
+        (status = 204, description = "Revoked (idempotent: unknown or already-revoked is still 204)"),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Below operator role"),
+    ),
+)]
 pub async fn delete(
     State(state): State<AppState>,
     identity: Identity,

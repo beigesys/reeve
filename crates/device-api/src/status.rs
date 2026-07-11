@@ -102,6 +102,23 @@ pub fn router(svc: Arc<dyn StatusIngest>) -> Router {
 /// Margo live path. Response codes per `deployment-status.md`: 200
 /// added/updated, 400 malformed, 401 unauthenticated (middleware),
 /// 403 wrong device, 422 semantic error.
+#[utoipa::path(
+    post,
+    path = "/api/v1/clients/{client_id}/deployments/{deployment_id}/status",
+    tag = "device",
+    params(
+        ("client_id" = String, Path, description = "Device id (must match the device credential)"),
+        ("deployment_id" = String, Path, description = "Deployment id being reported on"),
+    ),
+    request_body = DeploymentStatusManifest,
+    responses(
+        (status = 200, description = "Status added/updated"),
+        (status = 400, description = "Malformed DeploymentStatusManifest", body = crate::ErrorBody),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Token does not match clientId", body = crate::ErrorBody),
+        (status = 422, description = "Semantic error in the report", body = crate::ErrorBody),
+    ),
+)]
 pub async fn deployment_status(
     State(svc): State<Arc<dyn StatusIngest>>,
     DeviceIdentity(device_id): DeviceIdentity,
@@ -160,6 +177,21 @@ pub async fn deployment_status(
 /// (spec/reeve/05-health-journal.md §7.3). Replies [`JournalAck`]: the
 /// highest contiguously ingested seq, which is what permits agent-side
 /// journal eviction (§7.1).
+#[utoipa::path(
+    post,
+    path = "/api/reeve/v1/journal/{device_id}",
+    tag = "device",
+    params(
+        ("device_id" = String, Path, description = "Device id (must match the device credential)"),
+    ),
+    request_body = JournalBatch,
+    responses(
+        (status = 200, description = "Highest contiguously ingested sequence number", body = JournalAck),
+        (status = 401, description = "Unauthenticated"),
+        (status = 403, description = "Token does not match deviceId", body = crate::ErrorBody),
+        (status = 422, description = "Invalid batch", body = crate::ErrorBody),
+    ),
+)]
 pub async fn journal_backfill(
     State(svc): State<Arc<dyn StatusIngest>>,
     DeviceIdentity(device_id): DeviceIdentity,
