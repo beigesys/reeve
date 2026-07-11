@@ -32,27 +32,34 @@ done
 curl -fsS "$BASE/healthz" >/dev/null
 
 # --- admin (password mode first-boot: setup token is logged once) ----
-if curl -fsS -X POST "$BASE/api/auth/login" \
-     -H 'content-type: application/json' \
-     -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
-     -c "$COOKIES" >/dev/null 2>&1; then
+login() {
+  curl -fsS -X POST "$BASE/api/auth/login" \
+    -H 'content-type: application/json' \
+    -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
+    -c "$COOKIES" >/dev/null 2>&1
+}
+if login; then
   say "admin already exists — logged in"
 else
   say "creating the admin user ($ADMIN_USER / $ADMIN_PASS)"
   SETUP_TOKEN="$("${COMPOSE[@]}" logs reeve-server 2>&1 \
     | grep -oE 'rvs_[a-f0-9]+' | tail -1)"
-  if [ -z "$SETUP_TOKEN" ]; then
-    echo "could not find the first-boot setup token in server logs" >&2
+  if [ -n "$SETUP_TOKEN" ]; then
+    # Don't -f: a 409 (admin already exists) is not fatal here — we
+    # fall through and let the login below be the real gate.
+    code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/auth/setup" \
+      -H 'content-type: application/json' \
+      -d "{\"setup_token\":\"$SETUP_TOKEN\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}")"
+    say "setup returned HTTP $code"
+  fi
+  if ! login; then
+    echo >&2
+    echo "Could not log in as $ADMIN_USER after setup." >&2
+    echo "The server volume likely has a stale admin from an earlier run with" >&2
+    echo "different credentials. Reset it and try again:" >&2
+    echo "    just dev-down && just dev-up ${N}" >&2
     exit 1
   fi
-  curl -fsS -X POST "$BASE/api/auth/setup" \
-    -H 'content-type: application/json' \
-    -d "{\"setup_token\":\"$SETUP_TOKEN\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
-    >/dev/null
-  curl -fsS -X POST "$BASE/api/auth/login" \
-    -H 'content-type: application/json' \
-    -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
-    -c "$COOKIES" >/dev/null
 fi
 
 # --- enable the remote terminal fleet-wide ---------------------------
