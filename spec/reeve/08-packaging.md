@@ -164,9 +164,12 @@ themselves: Kubernetes manifests wrapping the same artifacts for
 operators who insist, and CI examples (musl build matrix,
 embedding, release). Anything `reeve-server init` or `reeve-agent
 install` can emit MUST NOT be duplicated as a checked-in file that
-can drift — with ONE named exception: `deploy/compose.yml`, the
-canonical tier-agnostic compose file (docs/decisions/deploy.md D9). `init`
-emits a copy/variant of it and CI MUST keep the two in sync.
+can drift — with ONE named exception: the root `compose.yml`, the
+canonical tier-agnostic compose file (docs/decisions/deploy.md D9),
+kept at the repo root (with `docker/` Dockerfiles and `.env.example`)
+so the containerized path runs with zero flags. `init` emits a
+copy/variant of it and CI MUST keep the two in sync
+(tests/packaging_flow.rs).
 
 ### 10.7 Security
 

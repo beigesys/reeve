@@ -1,0 +1,10 @@
+# Keep the build context small — but KEEP .git (build.rs derives
+# GIT_HASH for --version from it, §10.1).
+target/
+ui/node_modules/
+ui/dist/
+data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+.env

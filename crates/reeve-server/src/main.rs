@@ -237,7 +237,7 @@ fn init_cmd(args: &[String]) -> anyhow::Result<()> {
 }
 
 /// `reeve-server healthz` — probe /healthz on the local listener
-/// (REEVE_LISTEN, default 0.0.0.0:8420). The deploy/compose.yml D9
+/// (REEVE_LISTEN, default 0.0.0.0:8420). The root compose.yml D9
 /// healthcheck runs this INSIDE the container where no curl exists.
 /// Plain std TCP; exit 0 iff HTTP 200.
 fn healthz_cmd() -> anyhow::Result<()> {

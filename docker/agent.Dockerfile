@@ -1,0 +1,41 @@
+# docker/agent.Dockerfile — reeve-agent container image (DEV / TEST).
+#
+# The agent's real deploy path is the static binary + systemd unit
+# (`reeve-agent install`, §10.3) on the host it manages — it is
+# substrate-blind and drives `docker compose` on the HOST. This image
+# exists for the dev/e2e harness and CI, NOT the production path.
+#
+# Because the agent shells out to `docker compose` (D5), this image is
+# based on docker:cli (compose plugin included) and MUST be given the
+# host docker socket to do anything real:
+#
+#   docker build -f docker/agent.Dockerfile -t reeve-agent .
+#   docker run --rm \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -v reeve-agent-data:/var/lib/reeve-agent \
+#     -v ./agent.toml:/etc/reeve-agent/agent.toml:ro \
+#     reeve-agent
+# (bare invocation = run/converge loop; `enroll`/`install` are subcommands.)
+#
+# (build context MUST be the repo root; see .dockerignore.)
+
+# --- agent (workspace build) ------------------------------------------
+FROM rust:1-bookworm AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake clang \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p reeve-agent \
+ && cp target/release/reeve-agent /reeve-agent
+
+# --- runtime ----------------------------------------------------------
+# docker:cli carries the docker client + compose plugin the provider
+# calls; the host socket is mounted at run time (see header).
+FROM docker:cli
+COPY --from=build /reeve-agent /usr/local/bin/reeve-agent
+ENV REEVE_AGENT_CONFIG=/etc/reeve-agent/agent.toml
+VOLUME ["/var/lib/reeve-agent"]
+ENTRYPOINT ["reeve-agent"]

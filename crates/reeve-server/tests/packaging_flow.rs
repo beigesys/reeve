@@ -163,13 +163,13 @@ fn init_emits_compose_and_zot_idempotently_and_warns_about_keyfile() {
     assert_eq!(std::fs::read(data_dir.join("secret.key")).unwrap(), key);
 }
 
-/// D9 / §10.6: deploy/compose.yml is the ONE checked-in emittable
+/// D9 / §10.6: the root `compose.yml` is the ONE checked-in emittable
 /// file; `init` emits a copy of it and CI keeps the two in sync —
 /// this test IS that check (byte-identical AND same service set, so
 /// a divergence names the services involved).
 #[test]
 fn init_compose_matches_canonical_file() {
-    let canonical_path = FsPath::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose.yml"));
+    let canonical_path = FsPath::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../compose.yml"));
     let canonical = std::fs::read_to_string(canonical_path).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
@@ -192,8 +192,65 @@ fn init_compose_matches_canonical_file() {
         names
     };
     assert_eq!(services(&canonical), vec!["reeve-server", "registry"]);
-    assert_eq!(services(&emitted), services(&canonical), "init drifted from deploy/compose.yml (D9)");
+    assert_eq!(services(&emitted), services(&canonical), "init drifted from compose.yml (D9)");
     assert_eq!(emitted, canonical, "init must emit the canonical compose file verbatim");
+}
+
+/// Guard against the compose file referencing env vars the binary
+/// never reads (the class of drift that once shipped REEVE_PORT /
+/// REEVE_SNAPSHOT_TARGET / REEVE_REGISTRY_BACKEND — names nothing in
+/// config.rs consumes). Every `REEVE_*` key in the compose service
+/// environment MUST be a name the server actually honours.
+#[test]
+fn compose_env_keys_are_all_read_by_the_binary() {
+    // The env surface config.rs documents/reads (crates/reeve-server/
+    // src/config.rs). REEVE_IMAGE / REEVE_PORT are compose-level knobs
+    // (image ref, host port map), not server env — allowed as interp
+    // defaults but never set INTO the container environment.
+    const KNOWN: &[&str] = &[
+        "REEVE_LISTEN",
+        "REEVE_DATA_DIR",
+        "REEVE_AUTH",
+        "REEVE_PROXY_USER_HEADER",
+        "REEVE_PROXY_ROLE_HEADER",
+        "REEVE_PROXY_TRUSTED_CIDR",
+        "REEVE_SESSION_TTL_SECS",
+        "REEVE_REGISTRY",
+        "REEVE_UPSTREAM",
+        "REEVE_UPSTREAM_TOKEN",
+        "REEVE_SITE",
+        "REEVE_SYNC_INTERVAL_SECS",
+        "REEVE_DURABILITY",
+        "REEVE_DURABILITY_TARGET",
+        "REEVE_DURABILITY_INSTANCE",
+        "REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS",
+        "REEVE_DURABILITY_RETAIN_DAYS",
+        "REEVE_DURABILITY_RETAIN_MIN_GENERATIONS",
+        "REEVE_DURABILITY_CHANGESET_INTERVAL_SECS",
+        "REEVE_DURABILITY_CHANGESET_COMMITS",
+        "REEVE_DURABILITY_VERIFY_INTERVAL_SECS",
+        "REEVE_ZOT_URL",
+        "REEVE_ZOT_USERNAME",
+        "REEVE_ZOT_PASSWORD",
+        "REEVE_INSTALL_OPEN",
+    ];
+    let canonical_path = FsPath::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../compose.yml"));
+    let canonical = std::fs::read_to_string(canonical_path).unwrap();
+    let v: serde_json::Value =
+        serde_yaml_ng::from_str::<serde_json::Value>(&canonical).expect("compose parses");
+    let env = v["services"]["reeve-server"]["environment"]
+        .as_object()
+        .expect("reeve-server.environment map");
+    for key in env.keys().filter(|k| k.starts_with("REEVE_")) {
+        assert!(
+            KNOWN.contains(&key.as_str()),
+            "compose sets {key} into the server environment, but config.rs reads no such var — \
+             drift (add it to config.rs, or fix the compose key)"
+        );
+    }
+    // AWS_* target creds are read by object_store, not config.rs —
+    // present in the compose but intentionally outside the REEVE_ set.
+    assert!(env.contains_key("AWS_ACCESS_KEY_ID"), "S3 target creds must be wired");
 }
 
 #[test]

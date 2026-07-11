@@ -1,0 +1,51 @@
+# docker/server.Dockerfile — reeve-server container image.
+#
+# Multi-stage: build the UI (node) -> embed + compile the server (rust)
+# -> ship the single binary on a minimal distroless base (glibc + CA
+# certs + tzdata, no shell). The one port 8420 carries UI + API +
+# artifacts + SSE + ws + /v2 (SPEC §10.2).
+#
+# NOTE: this is the CONTAINER path. The static-musl copy-to-a-bare-box
+# binaries (§10.1) are a separate artifact built by deploy/ci; here we
+# take the reliable glibc/distroless route so aws-lc/rustls builds
+# without a musl sysroot dance.
+#
+#   docker build -f docker/server.Dockerfile -t reeve-server .
+# (build context MUST be the repo root — the whole cargo workspace +
+#  .git are needed; see .dockerignore.)
+
+# --- UI (rust-embed reads ui/dist at compile time) --------------------
+FROM node:22-alpine AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json* ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+# --- server (workspace build) -----------------------------------------
+FROM rust:1-bookworm AS build
+# aws-lc-rs (rustls) needs cmake + a C/C++ toolchain; rusqlite bundles
+# SQLite from source (cc already present in the rust image).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake clang \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+# UI dist from the node stage so build.rs embeds a real bundle.
+COPY --from=ui /ui/dist ui/dist
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p reeve-server \
+ && cp target/release/reeve-server /reeve-server
+
+# --- runtime ----------------------------------------------------------
+# distroless/cc: glibc + libgcc + CA certificates (federation/S3 TLS) +
+# tzdata, no shell/package manager. Runs as root so the /data volume is
+# writable; drop with `user:` in compose if the volume is pre-chowned.
+FROM gcr.io/distroless/cc-debian12
+COPY --from=build /reeve-server /reeve-server
+ENV REEVE_LISTEN=0.0.0.0:8420 REEVE_DATA_DIR=/data
+EXPOSE 8420
+VOLUME ["/data"]
+# healthz is a built-in subcommand (§10.1) — no curl needed in the image.
+ENTRYPOINT ["/reeve-server"]

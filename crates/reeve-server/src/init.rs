@@ -11,11 +11,11 @@
 //! load_or_create — re-running on a half-initialized dir converges
 //! and never errors on "already exists".
 //!
-//! The emitted compose file IS the canonical deploy/compose.yml (D9:
+//! The emitted compose file IS the canonical root `compose.yml` (D9:
 //! "init emits a copy/variant of it, and CI keeps the two in sync") —
 //! embedded verbatim at compile time, so the two cannot drift within
 //! one build; tests/packaging_flow.rs pins the sync against the
-//! checked-in file.
+//! checked-in file AND that its env keys are ones the binary reads.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -23,8 +23,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 
 /// The one checked-in compose file (docs/decisions/deploy.md D9),
-/// embedded verbatim.
-pub const CANONICAL_COMPOSE: &str = include_str!("../../../deploy/compose.yml");
+/// embedded verbatim. Lives at the repo root (the thing operators run
+/// with zero flags); `reeve-server init` emits a copy of it.
+pub const CANONICAL_COMPOSE: &str = include_str!("../../../compose.yml");
 
 /// The §12.2 separate-backup warning — MUST reach the operator
 /// (§10.3); returned as an action line AND logged by the caller.

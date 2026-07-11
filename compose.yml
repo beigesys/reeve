@@ -1,0 +1,106 @@
+# compose.yml — reeve-server, any tier, one file (D9).
+# The ONE checked-in compose file; `reeve-server init` emits a copy
+# of this (tests/packaging_flow.rs pins the two in sync).
+#
+#   ROOT / HUB (or air-gapped standalone):
+#       leave REEVE_UPSTREAM unset
+#   SPOKE / GATEWAY:
+#       REEVE_UPSTREAM=https://hub.example.com  (+ token + site)
+#
+#   Profiles (opt-in sidecars):
+#       --profile registry    zot image registry (proxied at /v2/)
+#
+#   Durability needs NO sidecar: snapshot + changeset tiers are
+#   in-binary (SPEC §9), selected by REEVE_DURABILITY below. The zot
+#   config the registry profile mounts is emitted by `reeve-server
+#   init --registry` — not checked in, run init first.
+#
+#   Env values come from a .env file beside this one (see .env.example);
+#   this file holds only shape + defaults, never secrets (.env rule).
+#
+#   Examples:
+#       docker compose up -d                          # hub, no sidecars
+#       docker compose --profile registry up -d       # hub + image cache
+#       REEVE_UPSTREAM=https://hub.example.com \
+#         REEVE_UPSTREAM_TOKEN=... REEVE_SITE=plant-a \
+#         docker compose up -d                        # site gateway
+
+name: reeve
+
+services:
+  reeve-server:
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
+    image: ${REEVE_IMAGE:-ghcr.io/beige/reeve-server:latest}
+    restart: unless-stopped
+    ports:
+      # the ONE port: UI + API + artifacts + SSE + ws + /v2
+      - "${REEVE_PORT:-8420}:8420"
+    environment:
+      REEVE_LISTEN: 0.0.0.0:8420
+      REEVE_DATA_DIR: /data
+      # --- auth (D1) ----------------------------------------------
+      # password (default) | proxy | none. First boot with zero
+      # users logs a one-time setup token and serves /setup (D1).
+      REEVE_AUTH: ${REEVE_AUTH:-password}
+      REEVE_PROXY_USER_HEADER: ${REEVE_PROXY_USER_HEADER:-}
+      REEVE_PROXY_ROLE_HEADER: ${REEVE_PROXY_ROLE_HEADER:-}
+      REEVE_PROXY_TRUSTED_CIDR: ${REEVE_PROXY_TRUSTED_CIDR:-}
+      REEVE_SESSION_TTL_SECS: ${REEVE_SESSION_TTL_SECS:-604800}
+      # --- render (D8) --------------------------------------------
+      # tier registry endpoint substituted for ${REEVE_REGISTRY} at
+      # render time; the address devices reach this server on.
+      REEVE_REGISTRY: ${REEVE_REGISTRY:-}
+      # --- tier / federation (D9 / REV-005) -----------------------
+      # unset => root/hub (also the air-gapped mode)
+      # set   => spoke/gateway syncing revisions from this upstream
+      REEVE_UPSTREAM: ${REEVE_UPSTREAM:-}
+      REEVE_UPSTREAM_TOKEN: ${REEVE_UPSTREAM_TOKEN:-}
+      REEVE_SITE: ${REEVE_SITE:-}
+      REEVE_SYNC_INTERVAL_SECS: ${REEVE_SYNC_INTERVAL_SECS:-60}
+      # --- durability (D16 / SPEC §9: all in-binary) --------------
+      # none (default) | snapshot | changeset (seconds-RPO)
+      REEVE_DURABILITY: ${REEVE_DURABILITY:-none}
+      # object-store url: s3://bucket/prefix, or file:///data/snapshots
+      # for air-gapped tiers
+      REEVE_DURABILITY_TARGET: ${REEVE_DURABILITY_TARGET:-}
+      REEVE_DURABILITY_INSTANCE: ${REEVE_DURABILITY_INSTANCE:-default}
+      REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS: ${REEVE_DURABILITY_SNAPSHOT_INTERVAL_SECS:-900}
+      REEVE_DURABILITY_CHANGESET_INTERVAL_SECS: ${REEVE_DURABILITY_CHANGESET_INTERVAL_SECS:-5}
+      REEVE_DURABILITY_VERIFY_INTERVAL_SECS: ${REEVE_DURABILITY_VERIFY_INTERVAL_SECS:-86400}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_ENDPOINT: ${AWS_ENDPOINT:-}
+      # --- registry proxy (D8) ------------------------------------
+      # when the registry profile is up, reeve proxies image /v2/*
+      # routes to zot (own artifacts are served natively, D7); device
+      # tokens terminate here, Basic creds inject toward the backend.
+      REEVE_ZOT_URL: ${REEVE_ZOT_URL:-http://registry:5000}
+      REEVE_ZOT_USERNAME: ${REEVE_ZOT_USERNAME:-}
+      REEVE_ZOT_PASSWORD: ${REEVE_ZOT_PASSWORD:-}
+      # --- bootstrap (§10.4) --------------------------------------
+      REEVE_INSTALL_OPEN: ${REEVE_INSTALL_OPEN:-}
+    volumes:
+      - reeve-data:/data
+    healthcheck:
+      # scratch image has no curl: the binary probes /healthz itself
+      test: ["CMD", "/reeve-server", "healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  registry:
+    profiles: ["registry"]
+    image: ghcr.io/project-zot/zot-linux-amd64:latest
+    restart: unless-stopped
+    # no published ports: reached only via reeve-server's /v2 proxy
+    volumes:
+      - registry-data:/var/lib/registry
+      # emitted by `reeve-server init --registry` (D9): hub = cache/hold
+      # images, spoke = sync-on-demand from the hub's registry (D8)
+      - ./zot-config.json:/etc/zot/config.json:ro
+
+volumes:
+  reeve-data:
+  registry-data:
