@@ -28,12 +28,16 @@ function LoginPage() {
     mutation: {
       onSuccess: async (res) => {
         if (res.status === 200) {
-          await queryClient.invalidateQueries({ queryKey: getMeQueryKey() })
+          // Drop the cached (anonymous) `me` so the /_app guard's
+          // ensureQueryData refetches the now-authenticated session
+          // instead of reading the stale copy and bouncing back here.
+          queryClient.removeQueries({ queryKey: getMeQueryKey() })
           await navigate({ to: '/devices' })
         } else if (res.status === 401) {
           setError('Bad credentials.')
         } else {
           // 404: not in password auth mode — nothing to log in to.
+          queryClient.removeQueries({ queryKey: getMeQueryKey() })
           await navigate({ to: '/devices' })
         }
       },

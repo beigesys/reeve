@@ -33,7 +33,10 @@ function SetupPage() {
     mutation: {
       onSuccess: async (res) => {
         if (res.status === 201) {
-          await queryClient.invalidateQueries({ queryKey: getMeQueryKey() })
+          // Drop the cached (anonymous) `me` so the /_app guard
+          // refetches fresh auth; setup logs the new admin in
+          // server-side, so this lands straight in the app.
+          queryClient.removeQueries({ queryKey: getMeQueryKey() })
           await navigate({ to: '/devices' })
           return
         }
