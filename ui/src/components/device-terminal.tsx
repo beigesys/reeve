@@ -6,6 +6,7 @@
 //   byte 0 = 0x00 -> raw terminal bytes (both directions)
 //   byte 0 = 0x01 -> resize, body u16 BE cols + u16 BE rows (UI->agent)
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -48,15 +49,25 @@ export function DeviceTerminal({
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [closeReason, setCloseReason] = useState<string | null>(null)
+  const [fullscreen, setFullscreen] = useState(false)
 
   const teardown = useCallback(() => {
     wsRef.current?.close()
     wsRef.current = null
     termRef.current?.dispose()
     termRef.current = null
+    fitRef.current = null
   }, [])
+
+  // Refit xterm to the new geometry when entering/leaving fullscreen —
+  // after the layout settles — so the shell learns the new cols/rows.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => fitRef.current?.fit())
+    return () => cancelAnimationFrame(id)
+  }, [fullscreen])
 
   // Component unmount ends the session; no background sessions.
   useEffect(() => teardown, [teardown])
@@ -81,6 +92,7 @@ export function DeviceTerminal({
     term.open(container)
     fit.fit()
     termRef.current = term
+    fitRef.current = fit
 
     // Generated URL builder — then swapped to the ws scheme.
     const url = new URL(
@@ -146,7 +158,13 @@ export function DeviceTerminal({
   const blocked = !online || !operator
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      className={
+        fullscreen
+          ? 'fixed inset-0 z-50 flex flex-col gap-3 bg-background p-4'
+          : 'flex flex-col gap-3'
+      }
+    >
       <div className="flex items-center gap-3">
         {live ? (
           <Button variant="destructive" size="sm" onClick={disconnect}>
@@ -170,6 +188,24 @@ export function DeviceTerminal({
                     ? 'session ended'
                     : 'sessions are short-lived, explicitly initiated, and audited'}
         </span>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={() => setFullscreen((f) => !f)}
+          aria-label={fullscreen ? 'Exit fullscreen' : 'Fill window'}
+          title={fullscreen ? 'Exit fullscreen' : 'Fill window'}
+        >
+          {fullscreen ? (
+            <>
+              <Minimize2 className="size-4" /> Exit fullscreen
+            </>
+          ) : (
+            <>
+              <Maximize2 className="size-4" /> Fill window
+            </>
+          )}
+        </Button>
       </div>
       {closeReason && (
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
@@ -178,7 +214,11 @@ export function DeviceTerminal({
       )}
       <div
         ref={containerRef}
-        className="h-[28rem] overflow-hidden rounded-md border bg-black p-2"
+        className={
+          fullscreen
+            ? 'min-h-0 flex-1 overflow-hidden rounded-md border bg-black p-2'
+            : 'h-[28rem] overflow-hidden rounded-md border bg-black p-2'
+        }
       />
     </div>
   )
