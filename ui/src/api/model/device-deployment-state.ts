@@ -5,13 +5,27 @@
  * Fleet desired-state manager (Margo-inspired). Human API consumed by the reeve UI, plus the device-facing wire surface.
  * OpenAPI spec version: 0.1.0
  */
+import type { DeviceComponentState } from './device-component-state';
 
 /**
  * Current state of one deployment on a device
  * (`deployment_status_current` row).
  */
 export interface DeviceDeploymentState {
+  /**
+     * Per-component states (Margo `components[]`): one entry per
+     * component of the deployment, each with its own state and any
+     * error — so an operator sees WHICH component failed.
+     */
+  components?: DeviceComponentState[];
   deploymentId: string;
+  /**
+     * Overall failure reason — Margo `status.error.message` from the
+     * reported `DeploymentStatusManifest`. Present chiefly when
+     * `state == failed`. (Full compose logs are the ext-logs surface.)
+     * @nullable
+     */
+  error?: string | null;
   /**
      * Device-assigned RFC 3339 timestamp (absent for vanilla reports).
      * @nullable

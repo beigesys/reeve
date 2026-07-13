@@ -69,12 +69,33 @@ pub struct DeviceDeploymentState {
     pub deployment_id: String,
     /// Margo deployment state (`pending` … `failed`).
     pub state: String,
+    /// Overall failure reason — Margo `status.error.message` from the
+    /// reported `DeploymentStatusManifest`. Present chiefly when
+    /// `state == failed`. (Full compose logs are the ext-logs surface.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Per-component states (Margo `components[]`): one entry per
+    /// component of the deployment, each with its own state and any
+    /// error — so an operator sees WHICH component failed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<DeviceComponentState>,
     /// Journal seq of the report (absent for vanilla Margo reports).
     pub seq: Option<i64>,
     /// Device-assigned RFC 3339 timestamp (absent for vanilla reports).
     pub observed_at: Option<String>,
     /// Server receipt time, unix seconds.
     pub received_at: i64,
+}
+
+/// One component's current state (Margo `ComponentStatus`), surfaced so
+/// the UI can show which part of a deployment failed and why.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceComponentState {
+    pub name: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One device as listed by `GET /api/devices`.
@@ -247,19 +268,53 @@ fn row_to_device(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
     })
 }
 
+/// The lowercase wire name of a Margo deployment state (its serde
+/// representation), for surfacing component states as strings.
+fn state_str(s: reeve_types::margo::status::DeploymentState) -> String {
+    serde_json::to_value(s)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 fn deployments_of(
     conn: &Connection,
     device_id: &str,
 ) -> rusqlite::Result<Vec<DeviceDeploymentState>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT deployment_id, state, seq, observed_at, received_at
+        "SELECT deployment_id, state, seq, observed_at, received_at, payload
          FROM deployment_status_current WHERE device_id = ?1
          ORDER BY deployment_id",
     )?;
     let rows = stmt.query_map(params![device_id], |r| {
+        // The full DeploymentStatusManifest is stored verbatim in
+        // `payload`; pull the overall error + per-component states out
+        // of it so the UI has the failure detail (not just the state).
+        let payload: Option<String> = r.get(5)?;
+        let (error, components) = payload
+            .as_deref()
+            .and_then(|p| {
+                serde_json::from_str::<reeve_types::margo::status::DeploymentStatusManifest>(p).ok()
+            })
+            .map(|m| {
+                let err = m.status.error.and_then(|e| e.message);
+                let comps = m
+                    .components
+                    .into_iter()
+                    .map(|c| DeviceComponentState {
+                        name: c.name,
+                        state: state_str(c.state),
+                        error: c.error.and_then(|e| e.message),
+                    })
+                    .collect();
+                (err, comps)
+            })
+            .unwrap_or((None, Vec::new()));
         Ok(DeviceDeploymentState {
             deployment_id: r.get(0)?,
             state: r.get(1)?,
+            error,
+            components,
             seq: r.get(2)?,
             observed_at: r.get(3)?,
             received_at: r.get(4)?,

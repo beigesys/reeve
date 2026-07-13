@@ -33,6 +33,7 @@ export * from './deployment-status-event';
 export * from './deployment-status-manifest';
 export * from './deployment-status';
 export * from './device-class';
+export * from './device-component-state';
 export * from './device-deployment-state';
 export * from './device-detail';
 export * from './device-presence-event';

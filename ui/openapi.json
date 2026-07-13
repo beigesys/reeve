@@ -3461,6 +3461,28 @@
           "undetermined"
         ]
       },
+      "DeviceComponentState": {
+        "type": "object",
+        "description": "One component's current state (Margo `ComponentStatus`), surfaced so\nthe UI can show which part of a deployment failed and why.",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "DeviceDeploymentState": {
         "type": "object",
         "description": "Current state of one deployment on a device\n(`deployment_status_current` row).",
@@ -3470,8 +3492,22 @@
           "receivedAt"
         ],
         "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceComponentState"
+            },
+            "description": "Per-component states (Margo `components[]`): one entry per\ncomponent of the deployment, each with its own state and any\nerror — so an operator sees WHICH component failed."
+          },
           "deploymentId": {
             "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Overall failure reason — Margo `status.error.message` from the\nreported `DeploymentStatusManifest`. Present chiefly when\n`state == failed`. (Full compose logs are the ext-logs surface.)"
           },
           "observedAt": {
             "type": [
